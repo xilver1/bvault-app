@@ -247,32 +247,32 @@ impl PdbBuilder {
         all_pages.push(vec![0u8; PAGE_SIZE]);
         let mut next_page_index = 1u32;
         
-        // We'll collect table pointers and build all pages
-        // Table pointer format: (first=counter, empty=INDEX_page, last=DATA_page, type)
-        
-        // Transaction counter - starts high and we'll decrement
-        let mut transaction_counter = 60u32;  // Arbitrary starting value
+        // Global sequence counter - increments with each DATA page
+        // Per REX: sequence starts at 2 and increments
+        let mut sequence = 2u32;
         
         // Build all 20 tables in order
         for page_type in PageType::all_types() {
-            let (index_page, data_pages, index_page_idx, last_data_page) = 
-                self.build_table(*page_type, &mut next_page_index)?;
+            let (index_page, data_pages, index_page_idx, last_data_page, new_sequence) = 
+                self.build_table_with_sequence(*page_type, &mut next_page_index, sequence)?;
             
-            // Add table pointer with correct field order:
-            // - first: transaction counter
-            // - empty: INDEX page number  
-            // - last: DATA page number (or INDEX if no data)
-            // - type: table type
-            header.add_table(TablePointer::new(*page_type, transaction_counter, index_page_idx, last_data_page));
-            transaction_counter = transaction_counter.wrapping_sub(1);
+            // empty_candidate = next_unused_page after this table
+            let empty_candidate = next_page_index;
+            
+            // Add table pointer with Kaitai order: (type, empty_candidate, first_page, last_page)
+            header.add_table(TablePointer::new(*page_type, empty_candidate, index_page_idx, last_data_page));
+            
+            // Update sequence for next table
+            sequence = new_sequence;
             
             // Add pages
             all_pages.push(index_page);
             all_pages.extend(data_pages);
         }
         
-        // Update header with final page count
+        // Update header with final values
         header.next_unused_page = next_page_index;
+        header.sequence = sequence;
         all_pages[0] = header.to_page();
         
         // Flatten to single buffer
@@ -287,13 +287,20 @@ impl PdbBuilder {
     /// Build a single table (index page + data pages)
     /// Returns: (index_page, data_pages, index_page_idx, last_data_page_idx)
     fn build_table(&self, page_type: PageType, next_idx: &mut u32) -> Result<(Vec<u8>, Vec<Vec<u8>>, u32, u32)> {
+        let (index, data, idx, last, _) = self.build_table_with_sequence(page_type, next_idx, 1)?;
+        Ok((index, data, idx, last))
+    }
+    
+    /// Build a single table with sequence tracking
+    /// Returns: (index_page, data_pages, index_page_idx, last_data_page_idx, new_sequence)
+    fn build_table_with_sequence(&self, page_type: PageType, next_idx: &mut u32, mut sequence: u32) -> Result<(Vec<u8>, Vec<Vec<u8>>, u32, u32, u32)> {
         let index_page_idx = *next_idx;
         *next_idx += 1;
         
         let data_page_idx = *next_idx;
         
         // Build data pages based on table type
-        let (data_pages, has_data) = match page_type {
+        let (mut data_pages, has_data) = match page_type {
             PageType::Tracks => self.build_track_data_pages(next_idx)?,
             PageType::Genres => self.build_genre_data_pages(next_idx)?,
             PageType::Artists => self.build_artist_data_pages(next_idx)?,
@@ -309,18 +316,25 @@ impl PdbBuilder {
             PageType::Unknown17 => self.build_unknown17_data_pages(next_idx)?,
             PageType::Unknown18 => self.build_unknown18_data_pages(next_idx)?,
             PageType::History => self.build_history_data_pages(next_idx)?,
-            // Empty tables just get an empty data page
             _ => self.build_empty_data_pages(next_idx)?,
         };
         
-        // Extract num_row_offsets from last data page for active tables
-        // This is stored in the packed field at 0x18-0x1A, bits 11+
+        // Patch DATA pages with correct next_page and sequence
+        // Per REX/Kaitai: DATA pages have next_page = global next_unused, sequence = global sequence
+        for page in data_pages.iter_mut() {
+            if page[0x1B] != 0 {  // Only patch non-empty pages
+                // 0x0C: next_page = next_unused_page at time of creation
+                page[0x0C..0x10].copy_from_slice(&next_idx.to_le_bytes());
+                // 0x10: sequence = global sequence counter
+                page[0x10..0x14].copy_from_slice(&sequence.to_le_bytes());
+                sequence += 1;
+            }
+        }
+        
+        // Extract num_row_offsets from last data page
         let num_row_offsets = if has_data && !data_pages.is_empty() {
-            let last_page = data_pages.last().unwrap();
-            let packed = (last_page[0x18] as u32) 
-                | ((last_page[0x19] as u32) << 8) 
-                | ((last_page[0x1A] as u32) << 16);
-            packed >> 11  // num_row_offsets is in upper bits
+            // Per Kaitai, num_rows_small is at 0x18
+            data_pages.last().unwrap()[0x18] as u32
         } else {
             0
         };
@@ -330,15 +344,13 @@ impl PdbBuilder {
             .finalize(data_page_idx, has_data, num_row_offsets);
         
         // Calculate last_data_page
-        // For empty tables, last == index (same page)
-        // For tables with data, last = last DATA page index
         let last_data_page = if has_data && !data_pages.is_empty() {
             data_page_idx + (data_pages.len() as u32) - 1
         } else {
-            index_page_idx  // Empty tables: last == index
+            index_page_idx  // Empty tables: last == first
         };
         
-        Ok((index_page, data_pages, index_page_idx, last_data_page))
+        Ok((index_page, data_pages, index_page_idx, last_data_page, sequence))
     }
     
     /// Build empty data page (for tables with no content)
