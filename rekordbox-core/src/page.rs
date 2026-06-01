@@ -125,6 +125,10 @@ impl IndexPageBuilder {
     /// - has_data: whether there's actual data in the data page
     /// - num_row_offsets: number of row offsets in the data page (for index entry)
     pub fn finalize(mut self, data_page_index: u32, has_data: bool, num_row_offsets: u32) -> Vec<u8> {
+        // Only Tracks (0) and History (19) use actual index entries
+        // All other tables have NumEntries=0 even when they contain data
+        let uses_index_entries = matches!(self.page_type, PageType::Tracks | PageType::History);
+        
         // Page header per Kaitai/DeepSymmetry spec (0x00-0x1F = 32 bytes)
         
         // 0x00-0x03: gap (zeros, already zero)
@@ -161,8 +165,10 @@ impl IndexPageBuilder {
         // 0x24-0x25: Unknown3 (0x03ec per REX)
         self.data[0x24..0x26].copy_from_slice(&0x03ecu16.to_le_bytes());
         
-        // 0x26-0x27: NextOffset - 0 for empty pages (per REX)
-        self.data[0x26..0x28].copy_from_slice(&0u16.to_le_bytes());
+        // 0x26-0x27: NextOffset - 1 when table has indexed entries, 0 otherwise
+        // Per empirical analysis: Tracks/History with data have NextOffset=1
+        let next_offset: u16 = if has_data && uses_index_entries { 1 } else { 0 };
+        self.data[0x26..0x28].copy_from_slice(&next_offset.to_le_bytes());
         
         // 0x28-0x2B: PageIndex (self-reference per REX)
         self.data[0x28..0x2C].copy_from_slice(&self.page_index.to_le_bytes());
@@ -175,16 +181,16 @@ impl IndexPageBuilder {
         self.data[0x30..0x34].copy_from_slice(&0x03FFFFFFu32.to_le_bytes());
         
         // 0x34-0x37: Unknown6 (0, already zero)
-        
+
         // 0x38-0x39: NumEntries
-        let num_entries = if has_data { 1u16 } else { 0u16 };
+        let num_entries = if has_data && uses_index_entries { 1u16 } else { 0u16 };
         self.data[0x38..0x3A].copy_from_slice(&num_entries.to_le_bytes());
         
         // 0x3A-0x3B: FirstEmptyEntry (0x1fff per REX)
         self.data[0x3A..0x3C].copy_from_slice(&0x1fffu16.to_le_bytes());
         
         // 0x3C+: Index entries
-        if has_data {
+        if has_data && uses_index_entries {
             // First entry is the row offset count (or some related value)
             self.data[0x3C..0x40].copy_from_slice(&num_row_offsets.to_le_bytes());
             // Fill rest with 0x1ffffff8
@@ -363,15 +369,17 @@ impl PageBuilder {
         
         // 0x14-0x17: always zero (already zero)
         
-        // 0x18: num_rows_small (u8) - row count
-        self.data[0x18] = self.row_count as u8;
-        
-        // 0x19: bitmask/Unknown3 (u8) - per REX: increments by 0x20 for each active row
-        // But from golden file, this seems more complex. Use row_count * 0x20 as approximation
-        self.data[0x19] = ((self.row_count as u16 * 0x20) & 0xFF) as u8;
-        
-        // 0x1A: Unknown4 (u8) - usually 0
-        self.data[0x1A] = 0;
+        // 0x18-0x1A: Packed row count (24-bit little-endian)
+        // Format: packed = (num_row_offsets << 11) | num_rows
+        // - Lower 11 bits: num_rows (actual row count)
+        // - Upper 13 bits: num_row_offsets (always row_count * 4 for 4:1 ratio)
+        // Empirically verified: most tables follow 4:1 ratio
+        let num_rows = self.row_count as u32;
+        let num_row_offsets = num_rows * 4;  // 4:1 ratio as per empirical findings
+        let packed = (num_row_offsets << 11) | num_rows;
+        self.data[0x18] = (packed & 0xFF) as u8;
+        self.data[0x19] = ((packed >> 8) & 0xFF) as u8;
+        self.data[0x1A] = ((packed >> 16) & 0xFF) as u8;
         
         // 0x1B: page_flags (u8)
         // 0x34 for Tracks (type 0) and History (type 19) data pages
@@ -516,7 +524,7 @@ impl TablePointer {
 /// - 0x04-0x07: len_page (4096)
 /// - 0x08-0x0B: num_tables
 /// - 0x0C-0x0F: next_unused_page
-/// - 0x10-0x13: unknown (observed as 5)
+/// - 0x10-0x13: track_count (empirically verified: matches number of tracks in database)
 /// - 0x14-0x17: sequence (commit counter)
 /// - 0x18-0x1B: gap (zeros)
 /// - 0x1C+: table pointers (20 entries × 16 bytes)
@@ -524,8 +532,8 @@ pub struct FileHeader {
     pub page_size: u32,
     pub num_tables: u32,
     pub next_unused_page: u32,
-    pub unknown: u32,      // Usually 5
-    pub sequence: u32,     // Commit counter
+    pub track_count: u32,   // Field at 0x10 - empirically verified to be track count
+    pub sequence: u32,      // Commit counter
     pub tables: Vec<TablePointer>,
 }
 
@@ -535,8 +543,8 @@ impl FileHeader {
             page_size: PAGE_SIZE as u32,
             num_tables: 0,
             next_unused_page: 1,
-            unknown: 5,    // Per REX: observed as 0x5, 0x4, or 0x1
-            sequence: 2,   // Per REX: starts at 2
+            track_count: 0,  // Will be set based on actual track count
+            sequence: 2,     // Per REX: starts at 2
             tables: Vec::new(),
         }
     }
@@ -560,8 +568,8 @@ impl FileHeader {
         // 0x0C-0x0F: next_unused_page
         page[0x0C..0x10].copy_from_slice(&self.next_unused_page.to_le_bytes());
         
-        // 0x10-0x13: unknown
-        page[0x10..0x14].copy_from_slice(&self.unknown.to_le_bytes());
+        // 0x10-0x13: track_count (empirically verified)
+        page[0x10..0x14].copy_from_slice(&self.track_count.to_le_bytes());
         
         // 0x14-0x17: sequence
         page[0x14..0x18].copy_from_slice(&self.sequence.to_le_bytes());

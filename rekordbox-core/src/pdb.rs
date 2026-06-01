@@ -251,16 +251,25 @@ impl PdbBuilder {
         // Per REX: sequence starts at 2 and increments
         let mut sequence = 2u32;
         
+        // Collect table info while building
+        struct TableInfo {
+            page_type: PageType,
+            index_page_idx: u32,
+            last_data_page: u32,
+        }
+        let mut table_infos: Vec<TableInfo> = Vec::new();
+        
         // Build all 20 tables in order
         for page_type in PageType::all_types() {
             let (index_page, data_pages, index_page_idx, last_data_page, new_sequence) = 
                 self.build_table_with_sequence(*page_type, &mut next_page_index, sequence)?;
             
-            // empty_candidate = next_unused_page after this table
-            let empty_candidate = next_page_index;
-            
-            // Add table pointer with Kaitai order: (type, empty_candidate, first_page, last_page)
-            header.add_table(TablePointer::new(*page_type, empty_candidate, index_page_idx, last_data_page));
+            // Save info for later
+            table_infos.push(TableInfo {
+                page_type: *page_type,
+                index_page_idx,
+                last_data_page,
+            });
             
             // Update sequence for next table
             sequence = new_sequence;
@@ -270,9 +279,34 @@ impl PdbBuilder {
             all_pages.extend(data_pages);
         }
         
+        // NOW we know next_unused_page - set all empty_candidates to this value
+        // This ensures no table's empty_candidate points to a page used by another table
+        let final_next_unused = next_page_index;
+        
+        for info in &table_infos {
+            // All tables point to next_unused_page as their empty_candidate
+            // This is safe because any new pages would be allocated there
+            header.add_table(TablePointer::new(
+                info.page_type,
+                final_next_unused,  // All point to the same safe location
+                info.index_page_idx,
+                info.last_data_page,
+            ));
+        }
+        
+        // Patch all DATA pages: set next_page (0x0C) to final_next_unused
+        // This matches what golden files have - DATA pages point to empty_candidate
+        for page in all_pages.iter_mut().skip(1) {  // Skip header page
+            let flags = page[0x1B];
+            if flags == 0x24 || flags == 0x34 {  // DATA page
+                page[0x0C..0x10].copy_from_slice(&final_next_unused.to_le_bytes());
+            }
+        }
+        
         // Update header with final values
-        header.next_unused_page = next_page_index;
+        header.next_unused_page = final_next_unused;
         header.sequence = sequence;
+        header.track_count = self.tracks.len() as u32;  // Set track count (field 0x10)
         all_pages[0] = header.to_page();
         
         // Flatten to single buffer
@@ -319,12 +353,10 @@ impl PdbBuilder {
             _ => self.build_empty_data_pages(next_idx)?,
         };
         
-        // Patch DATA pages with correct next_page and sequence
-        // Per REX/Kaitai: DATA pages have next_page = global next_unused, sequence = global sequence
+        // Patch DATA pages with sequence counter
+        // Note: next_page (0x0C) is patched later in build() to point to final next_unused_page
         for page in data_pages.iter_mut() {
             if page[0x1B] != 0 {  // Only patch non-empty pages
-                // 0x0C: next_page = next_unused_page at time of creation
-                page[0x0C..0x10].copy_from_slice(&next_idx.to_le_bytes());
                 // 0x10: sequence = global sequence counter
                 page[0x10..0x14].copy_from_slice(&sequence.to_le_bytes());
                 sequence += 1;
@@ -854,10 +886,10 @@ impl PdbBuilder {
         // Track row has fixed fields + 21 string offsets
         // We need to calculate the total size first to determine string offsets
         
-        // Fixed part: 0x5E bytes (94 bytes) before string offsets
+        // Fixed part: 0x5A bytes (90 bytes) before string offsets
         // Then 21 × 2-byte offsets = 42 bytes
-        // Total fixed header: 136 bytes
-        const FIXED_SIZE: usize = 0x5E;
+        // Total fixed header: 132 bytes
+        const FIXED_SIZE: usize = 0x5A;
         const STRING_COUNT: usize = 21;
         const HEADER_SIZE: usize = FIXED_SIZE + STRING_COUNT * 2;
         
@@ -901,8 +933,9 @@ impl PdbBuilder {
         // 0x00-0x01: subtype (0x0024 for track with 2-byte offsets)
         row.extend_from_slice(&SUBTYPE_TRACK.to_le_bytes());
         
-        // 0x02-0x03: index_shift
-        row.extend_from_slice(&0u16.to_le_bytes());
+        // 0x02-0x03: index_shift (0x20 = 32 means 2-byte string offsets)
+        // Track rows MUST use 2-byte offsets since strings can be >255 bytes from row start
+        row.extend_from_slice(&0x20u16.to_le_bytes());
         
         // 0x04-0x07: bitmask (controls string field presence)
         // Value 0x000C0700 is standard for rekordbox 6.x tracks
@@ -920,80 +953,74 @@ impl PdbBuilder {
         // 0x14-0x17: unknown2
         row.extend_from_slice(&0u32.to_le_bytes());
         
-        // 0x18-0x19: u3 (use 0 for maximum CDJ compatibility)
-        row.extend_from_slice(&0u16.to_le_bytes());
-
-        // 0x1A-0x1B: u4 (use 0 for maximum CDJ compatibility)
-        row.extend_from_slice(&0u16.to_le_bytes());
-        
-        // 0x1C-0x1F: artwork_id
+        // 0x18-0x1B: artwork_id
         row.extend_from_slice(&track.artwork_id.to_le_bytes());
         
-        // 0x20-0x23: key_id
+        // 0x1C-0x1F: key_id
         row.extend_from_slice(&track.key_id.to_le_bytes());
         
-        // 0x24-0x27: original_artist_id
+        // 0x20-0x23: original_artist_id
         row.extend_from_slice(&0u32.to_le_bytes());
         
-        // 0x28-0x2B: label_id
+        // 0x24-0x27: label_id
         row.extend_from_slice(&track.label_id.to_le_bytes());
         
-        // 0x2C-0x2F: remixer_id
+        // 0x28-0x2B: remixer_id
         row.extend_from_slice(&0u32.to_le_bytes());
         
-        // 0x30-0x33: bitrate (in kbps)
+        // 0x2C-0x2F: bitrate (in kbps)
         row.extend_from_slice(&analysis.bitrate.to_le_bytes());
         
-        // 0x34-0x37: track_number
+        // 0x30-0x33: track_number
         row.extend_from_slice(&analysis.track_number.unwrap_or(0).to_le_bytes());
         
-        // 0x38-0x3B: tempo (BPM × 100)
+        // 0x34-0x37: tempo (BPM × 100)
         let tempo = (analysis.bpm * 100.0) as u32;
         row.extend_from_slice(&tempo.to_le_bytes());
         
-        // 0x3C-0x3F: genre_id
+        // 0x38-0x3B: genre_id
         row.extend_from_slice(&track.genre_id.to_le_bytes());
         
-        // 0x40-0x43: album_id
+        // 0x3C-0x3F: album_id
         row.extend_from_slice(&track.album_id.to_le_bytes());
         
-        // 0x44-0x47: artist_id
+        // 0x40-0x43: artist_id
         row.extend_from_slice(&track.artist_id.to_le_bytes());
         
-        // 0x48-0x4B: id
+        // 0x44-0x47: id
         row.extend_from_slice(&analysis.id.to_le_bytes());
         
-        // 0x4C-0x4D: disc_number
+        // 0x48-0x49: disc_number
         row.extend_from_slice(&1u16.to_le_bytes());
         
-        // 0x4E-0x4F: play_count
+        // 0x4A-0x4B: play_count
         row.extend_from_slice(&0u16.to_le_bytes());
         
-        // 0x50-0x51: year
+        // 0x4C-0x4D: year
         row.extend_from_slice(&analysis.year.unwrap_or(0).to_le_bytes());
         
-        // 0x52-0x53: sample_depth
+        // 0x4E-0x4F: sample_depth
         row.extend_from_slice(&analysis.bit_depth.to_le_bytes());
         
-        // 0x54-0x55: duration (seconds)
+        // 0x50-0x51: duration (seconds)
         row.extend_from_slice(&(analysis.duration_secs as u16).to_le_bytes());
         
-        // 0x56-0x57: unknown - Kaitai says "always 41?"
+        // 0x52-0x53: unknown - Kaitai says "always 41?"
         row.extend_from_slice(&41u16.to_le_bytes());
         
-        // 0x58: color_id
+        // 0x54: color_id
         row.push(0);
         
-        // 0x59: rating
+        // 0x55: rating
         row.push(0);
         
-        // 0x5A-0x5B: unknown - Kaitai says "always 1?"
+        // 0x56-0x57: unknown - Kaitai says "always 1?"
         row.extend_from_slice(&1u16.to_le_bytes());
         
-        // 0x5C-0x5D: unknown - Kaitai says "alternating 2 or 3"
+        // 0x58-0x59: unknown - Kaitai says "alternating 2 or 3"
         row.extend_from_slice(&0x0003u16.to_le_bytes());
         
-        // 0x5E onwards: string offsets (21 × 2 bytes)
+        // 0x5A onwards: string offsets (21 × 2 bytes)
         for offset in &string_offsets {
             row.extend_from_slice(&offset.to_le_bytes());
         }
