@@ -19,6 +19,7 @@ use rekordbox_core::{
     PdbBuilder, TrackAnalysis,
     generate_dat_file, generate_ext_file, generate_2ex_file, generate_anlz_path,
     generate_devsetting, generate_djprofile,
+    generate_xml, XmlExportOptions,   // <-- add this line
 };
 
 /// Export analyzed tracks to Pioneer USB format
@@ -84,6 +85,16 @@ pub fn export_usb_with_profile(
     pdb_file.write_all(&pdb_data)?;
     info!("Wrote export.pdb ({} bytes, {} pages)", pdb_data.len(), pdb_data.len() / 4096);
     
+    // Write rekordbox XML
+     let xml_opts = XmlExportOptions {
+        music_root: source_dir.to_path_buf(),
+        ..Default::default()
+    };
+    let xml = generate_xml(tracks, playlists, &xml_opts);
+    std::fs::write(rekordbox_dir.join("rekord-export.xml"), xml)?;
+    info!("Wrote rekord-export.xml");
+
+
     // Write DEVSETTING.DAT
     let devsetting_data = generate_devsetting();
     let devsetting_path = pioneer_dir.join("DEVSETTING.DAT");
