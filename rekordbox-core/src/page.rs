@@ -154,11 +154,9 @@ impl IndexPageBuilder {
         
         // Index header starts at 0x20
         // Bytes 0x20-0x21: Unknown1 (0x1fff)
-        // The two tables that carry REAL index entries (Tracks=0, History=19)
-        // write u32 0x00000001 here; every other table (even ones with data,
-        // e.g. Artists) writes the 0x1fff/0x1fff fill pair. Golden bytes:
-        //   indexed     -> 01 00 00 00
-        //   non-indexed -> FF 1F FF 1F   (== 0x1FFF1FFF little-endian)
+        // Indexed tables (Tracks=0, History=19) carry REAL index entries and write
+        // u32 0x00000001 here; all other tables write the 0x1fff/0x1fff fill pair.
+        //   indexed     -> 01 00 00 00      non-indexed -> FF 1F FF 1F (0x1FFF1FFF LE)
         let is_indexed_table = matches!(self.page_type, PageType::Tracks | PageType::History);
         if is_indexed_table {
             self.data[0x20..0x24].copy_from_slice(&1u32.to_le_bytes());
@@ -166,14 +164,14 @@ impl IndexPageBuilder {
             self.data[0x20..0x24].copy_from_slice(&0x1FFF_1FFFu32.to_le_bytes());
         }
         
-        // Bytes 0x22-0x23: Unknown2 (0x1fff)
         // 0x22-0x23 is written above, together with 0x20.
         
         // Bytes 0x24-0x25: Unknown3 (0x03ec)
         self.data[0x24..0x26].copy_from_slice(&0x03ecu16.to_le_bytes());
         
-        // Bytes 0x26-0x27: Active flag - 1 for tables with data, 0 otherwise
-        let active_flag = if has_data { 1u16 } else { 0u16 };
+        // Bytes 0x26-0x27: Active flag - 1 only for INDEXED tables (Tracks/History),
+        // 0 for every other table even when it has data (matches golden).
+        let active_flag = if is_indexed_table { 1u16 } else { 0u16 };
         self.data[0x26..0x28].copy_from_slice(&active_flag.to_le_bytes());
         
         // Bytes 0x28-0x2B: PageIndex (self-reference to this INDEX page's index)
@@ -188,22 +186,19 @@ impl IndexPageBuilder {
         
         // Bytes 0x34-0x37: Unknown6 (0)
         
-        // Bytes 0x38-0x39: NumEntries - 1 for tables with data, 0 otherwise
-        let num_entries = if has_data { 1u16 } else { 0u16 };
+        // Bytes 0x38-0x39: NumEntries - 1 only for INDEXED tables, 0 otherwise.
+        let num_entries = if is_indexed_table { 1u16 } else { 0u16 };
         self.data[0x38..0x3A].copy_from_slice(&num_entries.to_le_bytes());
         
         // Bytes 0x3A-0x3B: FirstEmptyEntry (0x1fff)
         self.data[0x3A..0x3C].copy_from_slice(&0x1fffu16.to_le_bytes());
         
-        // Bytes 0x3C+: Index entries or fill pattern
-        if has_data {
+        // Bytes 0x3C+: real index entry (INDEXED tables only) or fill pattern
+        if is_indexed_table {
             // Active tables: first entry is num_row_offsets, then fill
-            // DIAGNOSTIC (file-specific): the golden 1-track export stores these
-            // first-entry values for the indexed tables. Hardcoded ONLY to make the
-            // index pages byte-match golden, so we can test whether that clears the
-            // "Device library corrupted" error. NOT a real formula — it is correct
-            // only for this exact test file. Replace once multi-track golden samples
-            // let us derive how this value is computed.
+            // DIAGNOSTIC (file-specific): golden 1-track export values, hardcoded ONLY
+            // to make index pages byte-match golden for the corruption test. NOT a real
+            // formula. Replace once multi-track golden samples let us derive it.
             let entry_value = match self.page_type {
                 PageType::Tracks => 19u32,
                 PageType::History => 323u32,
@@ -360,14 +355,11 @@ impl PageBuilder {
         // Each page has a unique sequential type number matching its position
         self.data[0x04..0x08].copy_from_slice(&self.page_index.to_le_bytes());
         
-        // 0x08-0x0B: next_page (0xFFFFFFFF if none, 0 for single page tables)
-        self.data[0x08..0x0C].copy_from_slice(&next_page.to_le_bytes());
+        // 0x08-0x0B: page_type (table type) — golden writes the table type here.
+        self.data[0x08..0x0C].copy_from_slice(&(self.page_type as u32).to_le_bytes());
         
-        // 0x0C-0x0F: unknown1 - appears to be a cross-reference value
-        // For DATA pages, this seems to hold transaction/allocation info
-        // Set to page_index + table_type combination
-        let unk1 = self.page_index + (self.page_type as u32);
-        self.data[0x0C..0x10].copy_from_slice(&unk1.to_le_bytes());
+        // 0x0C-0x0F: next_page (build() patches DATA pages to next_unused afterward).
+        self.data[0x0C..0x10].copy_from_slice(&next_page.to_le_bytes());
         
         // 0x10-0x13: unknown2 - appears to be another counter/reference
         // Set based on row count for data pages
@@ -525,13 +517,18 @@ impl TablePointer {
         }
     }
     
-    /// Serialize to bytes - format: (first, empty, last, table_type)
+    /// Serialize to bytes in golden/KSY order: (type, empty_candidate, first_page, last_page).
+    /// The struct field names predate this correction; mapping to byte positions:
+    ///   table_type -> type             (+0)
+    ///   first      -> empty_candidate  (+4)   [build() stores next_unused here]
+    ///   empty      -> first_page/INDEX (+8)
+    ///   last       -> last_page/DATA   (+12)
     pub fn to_bytes(&self) -> [u8; 16] {
         let mut bytes = [0u8; 16];
-        bytes[0..4].copy_from_slice(&self.first.to_le_bytes());
-        bytes[4..8].copy_from_slice(&self.empty.to_le_bytes());
-        bytes[8..12].copy_from_slice(&self.last.to_le_bytes());
-        bytes[12..16].copy_from_slice(&self.table_type.to_le_bytes());
+        bytes[0..4].copy_from_slice(&self.table_type.to_le_bytes());
+        bytes[4..8].copy_from_slice(&self.first.to_le_bytes());
+        bytes[8..12].copy_from_slice(&self.empty.to_le_bytes());
+        bytes[12..16].copy_from_slice(&self.last.to_le_bytes());
         bytes
     }
 }
@@ -547,6 +544,10 @@ pub struct FileHeader {
     pub page_size: u32,
     pub num_tables: u32,
     pub next_unused_page: u32,
+    /// 0x10: number of tracks in the database (rekordbox calls this "unknown").
+    pub track_count: u32,
+    /// 0x14: file-level transaction/sequence counter.
+    pub sequence: u32,
     pub tables: Vec<TablePointer>,
 }
 
@@ -556,6 +557,8 @@ impl FileHeader {
             page_size: PAGE_SIZE as u32,
             num_tables: 0,
             next_unused_page: 1,
+            track_count: 0,
+            sequence: 0,
             tables: Vec::new(),
         }
     }
@@ -578,8 +581,16 @@ impl FileHeader {
         // Bytes 12-15: next_unused_page
         page[12..16].copy_from_slice(&self.next_unused_page.to_le_bytes());
         
-        // Table pointers start at byte 0x10 (16)
-        let mut offset = 0x10;
+        // Bytes 0x10-0x13: track_count (rekordbox's "unknown" field)
+        page[0x10..0x14].copy_from_slice(&self.track_count.to_le_bytes());
+        
+        // Bytes 0x14-0x17: sequence (file-level transaction counter)
+        page[0x14..0x18].copy_from_slice(&self.sequence.to_le_bytes());
+        
+        // Bytes 0x18-0x1B: gap (left zero)
+        
+        // Table pointers start at byte 0x1C (28), NOT 0x10
+        let mut offset = 0x1C;
         for table in &self.tables {
             page[offset..offset + 16].copy_from_slice(&table.to_bytes());
             offset += 16;

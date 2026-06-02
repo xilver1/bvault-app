@@ -889,7 +889,7 @@ impl PdbBuilder {
         // Fixed part: 0x5A bytes (90 bytes) before string offsets
         // Then 21 × 2-byte offsets = 42 bytes
         // Total fixed header: 132 bytes
-        const FIXED_SIZE: usize = 0x5A;
+        const FIXED_SIZE: usize = 0x5E; // was 0x5A; +4 for unknown3/unknown4 (see below)
         const STRING_COUNT: usize = 21;
         const HEADER_SIZE: usize = FIXED_SIZE + STRING_COUNT * 2;
         
@@ -953,7 +953,14 @@ impl PdbBuilder {
         // 0x14-0x17: unknown2
         row.extend_from_slice(&0u32.to_le_bytes());
         
-        // 0x18-0x1B: artwork_id
+        // 0x18-0x19: unknown3, 0x1A-0x1B: unknown4
+        // REQUIRED. These two u2 fields were missing, which placed artwork_id and
+        // every field after it 4 bytes too early relative to a real rekordbox row
+        // (per the Crate Digger KSY track_row). Values are unknown-purpose; 0 is fine.
+        row.extend_from_slice(&0u16.to_le_bytes());
+        row.extend_from_slice(&0u16.to_le_bytes());
+        
+        // 0x1C-0x1F: artwork_id  (NOTE: offsets in the comments below are now +4)
         row.extend_from_slice(&track.artwork_id.to_le_bytes());
         
         // 0x1C-0x1F: key_id
