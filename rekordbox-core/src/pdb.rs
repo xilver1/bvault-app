@@ -279,20 +279,28 @@ impl PdbBuilder {
             all_pages.extend(data_pages);
         }
         
-        // NOW we know next_unused_page - set all empty_candidates to this value
-        // This ensures no table's empty_candidate points to a page used by another table
-        let final_next_unused = next_page_index;
-        
+        let page_count = next_page_index; // first index past all real pages
+
+        // empty_candidate scheme (matches golden; rekordbox validates this):
+        //   empty tables -> their reserved zeroed page (last_data_page + 1, already allocated)
+        //   data tables  -> a distinct phantom page beyond the file
+        //   next_unused_page is above all of them and equals none
+        let mut phantom = page_count;
         for info in &table_infos {
-            // All tables point to next_unused_page as their empty_candidate
-            // This is safe because any new pages would be allocated there
+            let has_data = info.last_data_page > info.index_page_idx;
+            let empty_candidate = if has_data {
+                let p = phantom; phantom += 1; p
+            } else {
+                info.last_data_page + 1
+            };
             header.add_table(TablePointer::new(
                 info.page_type,
-                final_next_unused,  // All point to the same safe location
+                empty_candidate,
                 info.index_page_idx,
                 info.last_data_page,
             ));
         }
+        let final_next_unused = phantom; // strictly above every phantom empty_candidate
         
         // Patch all DATA pages: set next_page (0x0C) to final_next_unused
         // This matches what golden files have - DATA pages point to empty_candidate
@@ -638,7 +646,7 @@ impl PdbBuilder {
             .filter(|p| !p.is_folder)
             .flat_map(|p| {
                 p.track_ids.iter().enumerate().map(move |(idx, &track_id)| {
-                    (idx as u32, track_id, p.id)
+                    (idx as u32 + 1, track_id, p.id)
                 })
             })
             .collect();

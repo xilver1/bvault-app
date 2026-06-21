@@ -386,7 +386,7 @@ impl PageBuilder {
         // Genres (table 1) and History (table 19) use 0x34, others use 0x24
         // Per Deep Symmetry: data pages have (page_flags & 0x40) == 0
         self.data[0x1B] = match self.page_type {
-            PageType::Genres | PageType::History => PAGE_FLAGS_DATA_TRACK,  // 0x34
+            PageType::Tracks | PageType::History => PAGE_FLAGS_DATA_TRACK,  // 0x34
             _ => PAGE_FLAGS_DATA,  // 0x24
         };
         
