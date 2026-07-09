@@ -379,8 +379,11 @@ fn detect_bpm(samples: &[f32], sample_rate: u32) -> anyhow::Result<f64> {
     let analysis_samples = std::cmp::min(samples.len(), (sample_rate * 30) as usize);
     let samples = &samples[..analysis_samples];
     
-    // Onset detection via envelope following
-    let hop_size = sample_rate as usize / 100; // 10ms hops
+    // Onset detection via envelope following.
+    // 4ms hops (250 Hz) instead of 10ms: finer envelope resolution means the
+    // autocorrelation lag maps to BPM more precisely, so parabolic interpolation
+    // can resolve hundredths (golden stores e.g. 138.97) rather than coarse steps.
+    let hop_size = (sample_rate as usize / 250).max(1);
     let mut envelope = Vec::new();
     
     for chunk in samples.chunks(hop_size) {
@@ -400,34 +403,66 @@ fn detect_bpm(samples: &[f32], sample_rate: u32) -> anyhow::Result<f64> {
         }
     }
     
-    // Autocorrelation for tempo detection
-    // Search BPM range 60-200
-    let env_rate = 100.0; // Envelope sample rate (10ms = 100Hz)
+    // Autocorrelation for tempo detection. Envelope sample rate now ~250 Hz.
+    let env_rate = sample_rate as f64 / hop_size as f64;
     let min_lag = (env_rate * 60.0 / 200.0) as usize; // 200 BPM
     let max_lag = (env_rate * 60.0 / 60.0) as usize;  // 60 BPM
     
-    let mut best_bpm = 120.0;
+    let mut best_lag = min_lag;
     let mut best_correlation = 0.0f32;
-    
-    for lag in min_lag..=max_lag.min(envelope.len() - 1) {
+
+    // Store correlations so we can interpolate around the peak.
+    let hi = max_lag.min(envelope.len().saturating_sub(1));
+    let mut corr = vec![0.0f32; hi + 1];
+
+    for lag in min_lag..=hi {
         let mut correlation = 0.0f32;
         let count = envelope.len() - lag;
-        
         for i in 0..count {
             correlation += envelope[i] * envelope[i + lag];
         }
         correlation /= count as f32;
-        
+        corr[lag] = correlation;
+
         if correlation > best_correlation {
             best_correlation = correlation;
-            best_bpm = env_rate * 60.0 / lag as f64;
+            best_lag = lag;
         }
     }
-    
-    // Round to 0.5 BPM precision
-    let rounded = (best_bpm * 2.0).round() / 2.0;
-    
-    Ok(rounded)
+
+    // Parabolic interpolation around the integer peak to recover sub-lag
+    // precision. Integer lags alone quantize BPM coarsely (e.g. lag 43 -> 139.53,
+    // lag 44 -> 136.36 near 140 BPM), which is why exact values like 138.97 were
+    // unreachable and the old "round to 0.5" made it worse.
+    let refined_lag = if best_lag > min_lag && best_lag < hi {
+        let y0 = corr[best_lag - 1];
+        let y1 = corr[best_lag];
+        let y2 = corr[best_lag + 1];
+        let denom = y0 - 2.0 * y1 + y2;
+        if denom.abs() > 1e-9 {
+            let delta = 0.5 * (y0 - y2) / denom; // in [-1, 1]
+            best_lag as f64 + delta as f64
+        } else {
+            best_lag as f64
+        }
+    } else {
+        best_lag as f64
+    };
+
+    let mut best_bpm = env_rate * 60.0 / refined_lag;
+
+    // Octave correction: autocorrelation often locks onto the half-tempo (bar)
+    // lag, giving e.g. 70.5 instead of 141. Fold into a canonical DJ range.
+    // Techno/house/most 4-on-the-floor material sits ~90-180 BPM.
+    while best_bpm < 90.0 {
+        best_bpm *= 2.0;
+    }
+    while best_bpm > 180.0 {
+        best_bpm /= 2.0;
+    }
+
+    // No 0.5 quantization - rekordbox stores hundredths (e.g. 138.97).
+    Ok(best_bpm)
 }
 
 /// Find first beat position in milliseconds

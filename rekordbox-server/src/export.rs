@@ -129,10 +129,14 @@ pub fn export_usb_with_profile(
         let usb_file_path = track.file_path.clone();
         
         // Generate .DAT file
+        let total_samples =
+            (track.duration_secs * track.sample_rate.max(1) as f64).round() as u64;
         let dat_data = generate_dat_file(
             &track.beat_grid,
             &track.waveform,
             &usb_file_path,
+            track.file_size,
+            total_samples,
         )?;
         
         let mut dat_file = File::create(&anlz_full_path)?;

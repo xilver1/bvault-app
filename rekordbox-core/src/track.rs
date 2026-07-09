@@ -394,16 +394,20 @@ pub struct WaveformColumn {
 }
 
 impl WaveformColumn {
-    /// Encode to PWAV byte format: height in bits 7-3, whiteness in bits 2-0
+    /// Encode to PWAV byte format.
+    /// Golden layout (verified byte-for-byte against rekordbox export):
+    ///   bits 7-5 = whiteness (0-7), bits 4-0 = height (0-31)
+    /// (The previous `height<<3 | whiteness` packing was inverted, which is
+    /// why the preview waveform rendered as garbage.)
     pub fn to_byte(&self) -> u8 {
-        ((self.height & 0x1F) << 3) | (self.whiteness & 0x07)
+        ((self.whiteness & 0x07) << 5) | (self.height & 0x1F)
     }
     
     /// Decode from PWAV byte
     pub fn from_byte(byte: u8) -> Self {
         Self {
-            height: (byte >> 3) & 0x1F,
-            whiteness: byte & 0x07,
+            height: byte & 0x1F,
+            whiteness: (byte >> 5) & 0x07,
         }
     }
 }

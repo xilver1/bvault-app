@@ -155,30 +155,52 @@ impl WaveformGenerator {
             };
         }
         
+        // First pass: collect per-column RMS and peak.
+        // A fixed "* 4.0" boost saturates almost every column at height 31 on
+        // loud material (any RMS > 0.25), which renders as a solid block.
+        // Instead, normalize against the track's own loud-but-not-outlier level.
+        let mut rms_vals: Vec<f32> = Vec::with_capacity(400);
+        let mut peak_vals: Vec<f32> = Vec::with_capacity(400);
+
         for i in 0..400 {
             let start = i * segment_size;
             let end = std::cmp::min(start + segment_size, samples.len());
             let segment = &samples[start..end];
-            
+
             if segment.is_empty() {
-                columns.push(WaveformColumn { height: 0, whiteness: 0 });
+                rms_vals.push(0.0);
+                peak_vals.push(0.0);
                 continue;
             }
-            
-            // Calculate RMS amplitude
-            let rms: f32 = (segment.iter().map(|s| s * s).sum::<f32>() 
+
+            let rms: f32 = (segment.iter().map(|s| s * s).sum::<f32>()
                            / segment.len() as f32).sqrt();
-            
-            // Calculate peak for "whiteness" (loudness variation)
             let peak: f32 = segment.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-            
-            // Scale to 0-31 range for height (boost for visibility)
-            let height = (rms * 31.0 * 4.0).min(31.0) as u8;
-            
-            // Whiteness based on peak-to-RMS ratio (crest factor)
+            rms_vals.push(rms);
+            peak_vals.push(peak);
+        }
+
+        // Reference level = 95th percentile of column RMS, so a few loud
+        // transients don't crush the rest of the waveform.
+        let mut sorted = rms_vals.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let idx = ((sorted.len() as f32 * 0.95) as usize).min(sorted.len().saturating_sub(1));
+        let reference = sorted.get(idx).copied().unwrap_or(0.0).max(1e-6);
+
+        for i in 0..400 {
+            let rms = rms_vals[i];
+            let peak = peak_vals[i];
+
+            // Golden PWAV never reaches 31: pooled max=25, p95~=22, and the
+            // waveform sits mostly in the mid-20s with dips. Map the 95th
+            // percentile to 22 so loud sections land there and only true peaks
+            // approach the ceiling. (The old target of 28 still read as a block.)
+            let height = ((rms / reference) * 22.0).clamp(0.0, 31.0) as u8;
+
+            // Whiteness (crest factor). Golden caps at 5, so clamp there.
             let crest = if rms > 0.001 { peak / rms } else { 1.0 };
-            let whiteness = ((crest - 1.0) / 2.0).clamp(0.0, 7.0) as u8;
-            
+            let whiteness = ((crest - 1.0) / 2.0).clamp(0.0, 5.0) as u8;
+
             columns.push(WaveformColumn { height, whiteness });
         }
         
@@ -191,6 +213,8 @@ impl WaveformGenerator {
         let num_entries = (duration_secs * 150.0).ceil() as usize;
         let num_entries = num_entries.max(1);
         let mut entries = Vec::with_capacity(num_entries);
+        // Raw (bass, mid, high, amplitude) per entry, normalized after the loop.
+        let mut raw: Vec<(f32, f32, f32, f32)> = Vec::with_capacity(num_entries);
         
         if samples.is_empty() {
             return WaveformDetail {
@@ -273,7 +297,7 @@ impl WaveformGenerator {
                     .sum::<f32>() / (high_range.end() - high_range.start() + 1) as f32
             };
             
-            // Calculate overall amplitude for height
+            // Collect raw energies; normalization happens in a second pass below.
             let segment_end = std::cmp::min(sample_start + samples_per_entry, samples.len());
             let amplitude = if sample_start < segment_end {
                 let segment = &samples[sample_start..segment_end];
@@ -281,16 +305,39 @@ impl WaveformGenerator {
             } else {
                 0.0
             };
-            
-            // Scale to 0-7 range for colors (3 bits each)
-            let boost = 8.0;
-            let red = (bass_energy * boost).clamp(0.0, 7.0) as u8;
-            let green = (mid_energy * boost * 2.0).clamp(0.0, 7.0) as u8;
-            let blue = (high_energy * boost * 4.0).clamp(0.0, 7.0) as u8;
-            
-            // Height 0-31
-            let height = (amplitude * 31.0 * 4.0).clamp(0.0, 31.0) as u8;
-            
+
+            raw.push((bass_energy, mid_energy, high_energy, amplitude));
+        }
+
+        // Single shared reference (95th-percentile overall amplitude). Using a
+        // SEPARATE reference per band would normalize each colour channel to the
+        // same level and destroy the band balance - but golden PWV5 is strongly
+        // red-forward on techno (r mean ~6.6, b ~3, g ~2). A shared reference
+        // preserves that relative balance.
+        let pct95 = |mut v: Vec<f32>| -> f32 {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let i = ((v.len() as f32 * 0.95) as usize).min(v.len().saturating_sub(1));
+            v.get(i).copied().unwrap_or(0.0).max(1e-6)
+        };
+        let r_amp = pct95(raw.iter().map(|e| e.3).collect());
+        // Reference band energy: the loudest band's 95th percentile, so the
+        // dominant band reaches ~7 and quieter bands scale proportionally.
+        let r_band = pct95(
+            raw.iter()
+                .map(|e| e.0.max(e.1).max(e.2))
+                .collect(),
+        );
+
+        for (bass_energy, mid_energy, high_energy, amplitude) in raw {
+            let red = ((bass_energy / r_band) * 7.0).clamp(0.0, 7.0) as u8;
+            let green = ((mid_energy / r_band) * 7.0).clamp(0.0, 7.0) as u8;
+            let blue = ((high_energy / r_band) * 7.0).clamp(0.0, 7.0) as u8;
+
+            // Golden PWV5 height: peaks reach 31 but the MEAN is low (~10),
+            // i.e. quiet with occasional transients. Map p95 to ~18 so most
+            // entries sit low and only transients approach the ceiling.
+            let height = ((amplitude / r_amp) * 18.0).clamp(0.0, 31.0) as u8;
+
             entries.push(WaveformColorEntry { red, green, blue, height });
         }
         

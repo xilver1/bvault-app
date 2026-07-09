@@ -25,9 +25,15 @@ impl AnalysisCache {
         Ok(Self { cache_dir })
     }
     
-    /// Generate a cache key from file hash
+    /// Analyzer output version. BUMP THIS whenever BPM, beat-grid, or waveform
+    /// generation changes, so stale cached analyses are not silently reused.
+    /// (Cache was keyed on file hash ALONE - every algorithm fix was invisible
+    /// until the cache dir was manually cleared.)
+    const ANALYZER_VERSION: u32 = 2;
+
+    /// Generate a cache key from file hash + analyzer version
     fn cache_key(file_hash: u64) -> String {
-        format!("{:016x}.json", file_hash)
+        format!("{:016x}.v{}.json", file_hash, Self::ANALYZER_VERSION)
     }
     
     /// Get cached analysis if it exists and is valid

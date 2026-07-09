@@ -21,7 +21,53 @@ const PWV2_TAG: &[u8; 4] = b"PWV2"; // 100-column preview overview (deck strip)
 const PWV3_TAG: &[u8; 4] = b"PWV3"; // 3-band waveform for NXS compatibility
 const PWV4_TAG: &[u8; 4] = b"PWV4"; // Color preview waveform (1200×6 bytes)
 const PWV5_TAG: &[u8; 4] = b"PWV5";
+const PWV6_TAG: &[u8; 4] = b"PWV6"; // 3-band preview (.2EX)
+const PWV7_TAG: &[u8; 4] = b"PWV7"; // 3-band scrolling detail (.2EX)
+const PWVC_TAG: &[u8; 4] = b"PWVC"; // fixed 20-byte tag (.2EX)
 const PPTH_TAG: &[u8; 4] = b"PPTH";
+const PVBR_TAG: &[u8; 4] = b"PVBR"; // VBR seek index (.DAT)
+
+/// Generate PVBR (VBR seek index). Golden layout, constant size 1620 bytes:
+///   fourcc(4) len_header(4)=16 len_tag(4)=1620 unknown(4)=0
+///   then 400 x u32 monotonic byte offsets into the audio file,
+///   then 1 x u32 = total PCM sample count.
+///
+/// rekordbox writes this as the SECOND tag of every .DAT (right after PPTH).
+/// Omitting it appears to make rekordbox abandon the rest of the .DAT.
+fn generate_pvbr_section(file_size_bytes: u64, total_samples: u64) -> Vec<u8> {
+    let mut buffer = Vec::with_capacity(1620);
+    buffer.extend_from_slice(PVBR_TAG);
+    buffer.extend_from_slice(&16u32.to_be_bytes()); // len_header
+    buffer.extend_from_slice(&1620u32.to_be_bytes()); // len_tag (fixed)
+    buffer.extend_from_slice(&0u32.to_be_bytes()); // unknown
+
+    // 400 seek points spread across the file. For CBR this is exact; for VBR it
+    // is a linear approximation (seek accuracy degrades, nothing breaks).
+    for i in 0..400u64 {
+        let off = (file_size_bytes.saturating_mul(i) / 400) as u32;
+        buffer.extend_from_slice(&off.to_be_bytes());
+    }
+    // Final entry: total decoded sample count.
+    buffer.extend_from_slice(&(total_samples as u32).to_be_bytes());
+
+    debug_assert_eq!(buffer.len(), 1620);
+    buffer
+}
+
+/// Write the 28-byte PMAI file header.
+/// Bytes 12..28 are NOT zero in real rekordbox files - they are constant across
+/// every golden .DAT/.EXT/.2EX:
+///   00 00 00 01 | 00 01 00 00 | 00 01 00 00 | 00 00 00 00
+/// These were previously written as zeros.
+fn write_pmai_header(buffer: &mut Vec<u8>, total_size: usize) {
+    buffer.extend_from_slice(PMAI_TAG);
+    buffer.extend_from_slice(&28u32.to_be_bytes()); // len_header (offset of first tag)
+    buffer.extend_from_slice(&(total_size as u32).to_be_bytes()); // len_file
+    buffer.extend_from_slice(&0x0000_0001u32.to_be_bytes());
+    buffer.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+    buffer.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+    buffer.extend_from_slice(&0x0000_0000u32.to_be_bytes());
+}
 const PCOB_TAG: &[u8; 4] = b"PCOB"; // Cue/loop points (basic)
 const PCO2_TAG: &[u8; 4] = b"PCO2"; // Extended cue points with colors (Nexus 2+)
 
@@ -30,39 +76,39 @@ pub fn generate_dat_file(
     beat_grid: &BeatGrid,
     waveform: &Waveform,
     file_path: &str,
+    audio_file_size: u64,
+    total_samples: u64,
 ) -> Result<Vec<u8>> {
     let mut buffer = Vec::with_capacity(64 * 1024);
     
-    // Build sections first to calculate sizes
+    // Golden .DAT tag set and ORDER: PPTH PVBR PQTZ PWAV PWV2 PCOB PCOB
+    // PWV5 was previously written here; rekordbox keeps the color detail
+    // waveform in the .EXT only. Emitting it in .DAT is not what rekordbox does.
+    let ppth_section = generate_ppth_section(file_path);
+    let pvbr_section = generate_pvbr_section(audio_file_size, total_samples);
     let pqtz_section = generate_pqtz_section(beat_grid);
     let pwav_section = generate_pwav_section(&waveform.preview);
     let pwv2_section = generate_pwv2_section(&waveform.preview);
-    let pwv5_section = generate_pwv5_section(&waveform.detail);
-    let ppth_section = generate_ppth_section(file_path);
+    let pcob_hot = generate_pcob_empty(1);
+    let pcob_mem = generate_pcob_empty(0);
     
     // Calculate total file size
-    let sections_size = pqtz_section.len() + pwav_section.len() + pwv2_section.len() +
-                        pwv5_section.len() + ppth_section.len();
+    let sections_size = ppth_section.len() + pvbr_section.len() + pqtz_section.len()
+                        + pwav_section.len() + pwv2_section.len()
+                        + pcob_hot.len() + pcob_mem.len();
     let header_size = 28; // PMAI header
     let total_size = header_size + sections_size;
     
-    // Write PMAI header
-    buffer.extend_from_slice(PMAI_TAG);
-    buffer.extend_from_slice(&(header_size as u32).to_be_bytes()); // len_header = absolute offset of first tag (golden=0x1c), NOT size-4
-    buffer.extend_from_slice(&(total_size as u32).to_be_bytes()); // Total file length
+    write_pmai_header(&mut buffer, total_size);
     
-    // PMAI structure version and unknown fields
-    buffer.extend_from_slice(&0u32.to_be_bytes()); // Unknown
-    buffer.extend_from_slice(&0u32.to_be_bytes()); // Unknown
-    buffer.extend_from_slice(&0u32.to_be_bytes()); // Unknown
-    buffer.extend_from_slice(&0u32.to_be_bytes()); // Unknown
-    
-    // Write sections
-    buffer.extend_from_slice(&ppth_section); // Path first
-    buffer.extend_from_slice(&pqtz_section); // Beat grid
-    buffer.extend_from_slice(&pwav_section); // Preview waveform (400-col)
-    buffer.extend_from_slice(&pwv2_section); // Preview waveform (100-col, deck overview)
-    buffer.extend_from_slice(&pwv5_section); // Detail waveform
+    // Write sections in golden order
+    buffer.extend_from_slice(&ppth_section);
+    buffer.extend_from_slice(&pvbr_section);
+    buffer.extend_from_slice(&pqtz_section);
+    buffer.extend_from_slice(&pwav_section);
+    buffer.extend_from_slice(&pwv2_section);
+    buffer.extend_from_slice(&pcob_hot);
+    buffer.extend_from_slice(&pcob_mem);
     
     Ok(buffer)
 }
@@ -176,19 +222,24 @@ fn generate_pwv5_section(detail: &WaveformDetail) -> Vec<u8> {
     // Tag
     buffer.extend_from_slice(PWV5_TAG);
     
-    // Header: 4 (tag) + 4 (header_len) + 4 (section_len) + 4 (entry_count) + 4 (unknown) = 20 bytes
-    let header_len = 20u32 - 4;
+    // Header (24 bytes / 0x18) per DeepSymmetry spec:
+    //   fourcc(4) | len_header(4) | len_tag(4) | len_entry_bytes(4) | len_entries(4) | unknown(4)
+    // then data. len_entry_bytes is ALWAYS 2 for PWV5. The previous code omitted
+    // len_entry_bytes entirely (wrote a 20-byte header), which shifted the count
+    // into the entry_bytes slot and made rekordbox read garbage -> hang.
+    let header_len = 24u32;
+    let len_entry_bytes = 2u32;
+    let len_entries = detail.entries.len() as u32;
     let data_size = detail.entries.len() * 2; // 2 bytes per entry
-    let section_len = 20 + data_size;
+    let section_len = 24 + data_size;
     
     buffer.extend_from_slice(&header_len.to_be_bytes());
     buffer.extend_from_slice(&(section_len as u32).to_be_bytes());
+    buffer.extend_from_slice(&len_entry_bytes.to_be_bytes());
+    buffer.extend_from_slice(&len_entries.to_be_bytes());
     
-    // Entry count
-    buffer.extend_from_slice(&(detail.entries.len() as u32).to_be_bytes());
-    
-    // Unknown
-    buffer.extend_from_slice(&0u32.to_be_bytes());
+    // Unknown constant (bytes 14-17); spec: "may always have the value 00960305"
+    buffer.extend_from_slice(&0x0096_0305u32.to_be_bytes());
     
     // Waveform entries (2 bytes each, big-endian)
     for entry in &detail.entries {
@@ -198,26 +249,29 @@ fn generate_pwv5_section(detail: &WaveformDetail) -> Vec<u8> {
     buffer
 }
 
-/// Generate PPTH (file path) section
+/// Generate PPTH (file path) section.
+/// Golden layout: len_header=16, len_tag=16+len_path, len_path = BYTE length of
+/// the NUL-terminated UTF-16BE path (the terminator is included in the count).
 fn generate_ppth_section(file_path: &str) -> Vec<u8> {
     let mut buffer = Vec::new();
     
     // Tag
     buffer.extend_from_slice(PPTH_TAG);
     
-    // Encode path as UTF-16BE
-    let path_utf16: Vec<u16> = file_path.encode_utf16().collect();
+    // Encode path as UTF-16BE, NUL-terminated (golden includes the terminator)
+    let mut path_utf16: Vec<u16> = file_path.encode_utf16().collect();
+    path_utf16.push(0);
     let path_bytes_len = path_utf16.len() * 2;
     
-    // Header: 4 (tag) + 4 (header_len) + 4 (section_len) + 4 (path_len) = 16 bytes
-    let header_len = 16u32 - 4;
+    let header_len = 16u32;
     let section_len = 16 + path_bytes_len;
     
     buffer.extend_from_slice(&header_len.to_be_bytes());
     buffer.extend_from_slice(&(section_len as u32).to_be_bytes());
     
-    // Path length in characters
-    buffer.extend_from_slice(&(path_utf16.len() as u32).to_be_bytes());
+    // Path length in BYTES, including the UTF-16 NUL terminator.
+    // (Previously wrote the character count and omitted the terminator.)
+    buffer.extend_from_slice(&(path_bytes_len as u32).to_be_bytes());
     
     // Path data (UTF-16BE)
     for ch in path_utf16 {
@@ -227,41 +281,128 @@ fn generate_ppth_section(file_path: &str) -> Vec<u8> {
     buffer
 }
 
-/// Generate PWV3 (3-band waveform) section for NXS compatibility
-/// PWV3 uses 1 byte per entry (simpler than PWV5's 2-byte encoding)
+/// Generate PWV3 (monochrome scrolling detail waveform) for the .EXT file.
+/// Golden layout (verified): len_header=24, len_entry_bytes=1, len_entries=N,
+/// unknown=0x00960000, then N bytes. Each byte is `whiteness<<5 | height`,
+/// the same encoding as PWAV. Entry count equals the PWV5 detail entry count.
 fn generate_pwv3_section(detail: &WaveformDetail) -> Vec<u8> {
     let mut buffer = Vec::new();
 
-    // Tag
     buffer.extend_from_slice(PWV3_TAG);
 
-    // Header: 4 (tag) + 4 (header_len) + 4 (section_len) + 4 (entry_count) + 4 (unknown) = 20 bytes
-    let header_len = 20u32 - 4;
-    let data_size = detail.entries.len(); // 1 byte per entry
-    let section_len = 20 + data_size;
+    let len_entry_bytes = 1u32;
+    let len_entries = detail.entries.len() as u32;
+    let section_len = 24 + detail.entries.len();
 
-    buffer.extend_from_slice(&header_len.to_be_bytes());
+    buffer.extend_from_slice(&24u32.to_be_bytes()); // len_header
     buffer.extend_from_slice(&(section_len as u32).to_be_bytes());
+    buffer.extend_from_slice(&len_entry_bytes.to_be_bytes());
+    buffer.extend_from_slice(&len_entries.to_be_bytes());
+    buffer.extend_from_slice(&0x0096_0000u32.to_be_bytes());
 
-    // Entry count
-    buffer.extend_from_slice(&(detail.entries.len() as u32).to_be_bytes());
-
-    // Unknown
-    buffer.extend_from_slice(&0u32.to_be_bytes());
-
-    // Waveform entries (1 byte each)
-    // Format: bits 7-5: height(3), bits 4-2: whiteness(3), bits 1-0: unused
-    // For NXS compatibility, we encode just the essential waveform shape
     for entry in &detail.entries {
-        // Combine RGB into a single intensity and pack with height
-        let intensity = ((entry.red as u16 + entry.green as u16 + entry.blue as u16) / 3) as u8;
-        let whiteness = intensity.min(7);
-        let height_3bit = (entry.height >> 2).min(7); // Scale 5-bit to 3-bit
-        let byte = (height_3bit << 5) | (whiteness << 2);
-        buffer.push(byte);
+        let whiteness = (((entry.red as u16 + entry.green as u16 + entry.blue as u16) / 3) as u8).min(7);
+        let height = entry.height & 0x1F;
+        buffer.push((whiteness << 5) | height);
     }
 
     buffer
+}
+
+/// Generate PWV6 (3-band preview, 1200 columns) for the .2EX file.
+/// Golden: len_header=20, len_entry_bytes=3, len_entries=1200, no magic field.
+fn generate_pwv6_section(color_preview: &WaveformColorPreview) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    buffer.extend_from_slice(PWV6_TAG);
+
+    let data_size = 1200 * 3;
+    buffer.extend_from_slice(&20u32.to_be_bytes()); // len_header
+    buffer.extend_from_slice(&((20 + data_size) as u32).to_be_bytes());
+    buffer.extend_from_slice(&3u32.to_be_bytes()); // len_entry_bytes
+    buffer.extend_from_slice(&1200u32.to_be_bytes()); // len_entries
+
+    for i in 0..1200 {
+        if i < color_preview.columns.len() {
+            let c = &color_preview.columns[i];
+            // low / mid / high bands
+            buffer.push(c.blue & 0x7F);
+            buffer.push(c.red & 0x7F);
+            buffer.push(c.green & 0x7F);
+        } else {
+            buffer.extend_from_slice(&[0u8; 3]);
+        }
+    }
+    buffer
+}
+
+/// Generate PWV7 (3-band scrolling detail) for the .2EX file.
+/// Golden: len_header=24, len_entry_bytes=3, len_entries=N, unknown=0x00960000.
+fn generate_pwv7_section(detail: &WaveformDetail) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    buffer.extend_from_slice(PWV7_TAG);
+
+    let len_entries = detail.entries.len() as u32;
+    let data_size = detail.entries.len() * 3;
+
+    buffer.extend_from_slice(&24u32.to_be_bytes());
+    buffer.extend_from_slice(&((24 + data_size) as u32).to_be_bytes());
+    buffer.extend_from_slice(&3u32.to_be_bytes()); // len_entry_bytes
+    buffer.extend_from_slice(&len_entries.to_be_bytes());
+    buffer.extend_from_slice(&0x0096_0000u32.to_be_bytes());
+
+    for e in &detail.entries {
+        // Scale each 3-bit band by the 5-bit height into the observed 0..~127 range.
+        let scale = |ch: u8| -> u8 {
+            ((ch as u32 & 0x07) * (e.height as u32 & 0x1F) * 127 / (7 * 31)).min(127) as u8
+        };
+        buffer.push(scale(e.red));   // low
+        buffer.push(scale(e.green)); // mid
+        buffer.push(scale(e.blue));  // high
+    }
+    buffer
+}
+
+/// Generate PWVC tag (.2EX). Golden is a 20-byte tag with len_header=14.
+/// Payload after len_tag is: u16 zero, then three u16 band gains (low/mid/high).
+/// Golden values vary per track (e.g. 0x50/0xd0/0x150); one golden file uses
+/// 100/100/100, which is neutral scaling and the safe default here.
+fn generate_pwvc_section() -> Vec<u8> {
+    let mut buffer = Vec::with_capacity(20);
+    buffer.extend_from_slice(PWVC_TAG);
+    buffer.extend_from_slice(&14u32.to_be_bytes()); // len_header
+    buffer.extend_from_slice(&20u32.to_be_bytes()); // len_tag
+    buffer.extend_from_slice(&0u16.to_be_bytes()); // padding to len_header
+    buffer.extend_from_slice(&100u16.to_be_bytes()); // low band gain
+    buffer.extend_from_slice(&100u16.to_be_bytes()); // mid band gain
+    buffer.extend_from_slice(&100u16.to_be_bytes()); // high band gain
+    buffer
+}
+
+/// Generate an EMPTY PCOB tag (24 bytes) exactly as rekordbox does.
+/// Golden: len_header=24, len_tag=24, type, unk=0, len_cues=0, memory_count=0xffffffff.
+/// rekordbox always writes two of these (type 1 then type 0), even with no cues.
+fn generate_pcob_empty(cue_type: u32) -> Vec<u8> {
+    let mut b = Vec::with_capacity(24);
+    b.extend_from_slice(PCOB_TAG);
+    b.extend_from_slice(&24u32.to_be_bytes());
+    b.extend_from_slice(&24u32.to_be_bytes());
+    b.extend_from_slice(&cue_type.to_be_bytes());
+    b.extend_from_slice(&0u16.to_be_bytes()); // unknown
+    b.extend_from_slice(&0u16.to_be_bytes()); // len_cues
+    b.extend_from_slice(&0xffff_ffffu32.to_be_bytes()); // memory_count
+    b
+}
+
+/// Generate an EMPTY PCO2 tag (20 bytes). Golden: len_header=20, len_tag=20.
+fn generate_pco2_empty(cue_type: u32) -> Vec<u8> {
+    let mut b = Vec::with_capacity(20);
+    b.extend_from_slice(PCO2_TAG);
+    b.extend_from_slice(&20u32.to_be_bytes());
+    b.extend_from_slice(&20u32.to_be_bytes());
+    b.extend_from_slice(&cue_type.to_be_bytes());
+    b.extend_from_slice(&0u16.to_be_bytes()); // len_cues
+    b.extend_from_slice(&0u16.to_be_bytes()); // unknown
+    b
 }
 
 /// Generate PWV4 (color preview waveform) section
@@ -272,18 +413,22 @@ fn generate_pwv4_section(color_preview: &WaveformColorPreview) -> Vec<u8> {
     // Tag
     buffer.extend_from_slice(PWV4_TAG);
 
-    // Header: 4 (tag) + 4 (header_len) + 4 (section_len) + 4 (entry_count) + 4 (unknown) = 20 bytes
-    let header_len = 20u32 - 4;
+    // Header (24 bytes / 0x18) per DeepSymmetry spec:
+    //   fourcc(4) | len_header(4) | len_tag(4) | len_entry_bytes(4) | len_entries(4) | unknown(4)
+    // len_entry_bytes is ALWAYS 6 for PWV4; len_entries = 1200. Data (7200 bytes)
+    // begins at byte 24. Previous 20-byte header omitted len_entry_bytes and hung rekordbox.
+    let header_len = 24u32;
+    let len_entry_bytes = 6u32;
+    let len_entries = 1200u32;
     let data_size = 1200 * 6; // Always 1200 entries, 6 bytes each
-    let section_len = 20 + data_size;
+    let section_len = 24 + data_size;
 
     buffer.extend_from_slice(&header_len.to_be_bytes());
     buffer.extend_from_slice(&(section_len as u32).to_be_bytes());
+    buffer.extend_from_slice(&len_entry_bytes.to_be_bytes());
+    buffer.extend_from_slice(&len_entries.to_be_bytes());
 
-    // Entry count (always 1200)
-    buffer.extend_from_slice(&1200u32.to_be_bytes());
-
-    // Unknown
+    // Unknown constant (bytes 14-17)
     buffer.extend_from_slice(&0u32.to_be_bytes());
 
     // Write exactly 1200 color preview entries
@@ -430,26 +575,28 @@ fn generate_pcob_section(cue_points: &[CuePoint]) -> Vec<u8> {
     // Tag
     buffer.extend_from_slice(PCOB_TAG);
 
-    // PCOB header structure:
-    // 4 (tag) + 4 (header_len) + 4 (section_len) + 4 (cue_type) + 2 (unknown) + 2 (entry_count) = 20 bytes
-    let header_len = 20u32 - 4;
+    // PCOB header (24 bytes, per golden):
+    //   tag(4) len_header(4) len_tag(4) type(4) unknown(2) len_cues(2) memory_count(4)
+    let header_len = 24u32;
 
     // Each cue entry is 24 bytes (for memory cues) or 36 bytes (for hot cues with extended data)
     // We'll use the simpler 24-byte format for maximum compatibility
     let entry_size = 24usize;
     let entries_size = cue_points.len() * entry_size;
-    let section_len = 20 + entries_size;
+    let section_len = 24 + entries_size;
 
     buffer.extend_from_slice(&header_len.to_be_bytes());
     buffer.extend_from_slice(&(section_len as u32).to_be_bytes());
 
     // Cue list type (0 = memory cues, 1 = hot cues)
-    // We'll write all cues in one section for simplicity
-    buffer.extend_from_slice(&0u32.to_be_bytes());
+    buffer.extend_from_slice(&1u32.to_be_bytes());
 
     // Unknown (2 bytes) + entry count (2 bytes)
     buffer.extend_from_slice(&0u16.to_be_bytes());
     buffer.extend_from_slice(&(cue_points.len() as u16).to_be_bytes());
+
+    // memory_count
+    buffer.extend_from_slice(&0xffff_ffffu32.to_be_bytes());
 
     // Write cue entries
     for (i, cue) in cue_points.iter().enumerate() {
@@ -501,87 +648,88 @@ pub fn generate_anlz_full_path(usb_root: &str, track_id: u32) -> String {
 }
 
 /// Generate .EXT file (extended analysis for Nexus+ players)
-/// Includes additional sections not present in .DAT:
-/// - PWV3: 3-band waveform for NXS compatibility
-/// - PWV4: Color preview waveform (1200 columns)
-/// - PCO2: Extended cue points with colors
+/// Golden tag set / order: PPTH PWV3 PCOB PCOB PCO2 PCO2 [PQT2] PWV5 PWV4
+/// Note: PQTZ and PWAV do NOT belong in .EXT (they live in .DAT).
+/// PQT2 (extended beat grid) is not generated: its 56-byte header contains a
+/// per-track value we have not derived, and a wrong PQT2 is worse than none.
 pub fn generate_ext_file(
-    beat_grid: &BeatGrid,
+    _beat_grid: &BeatGrid,
     waveform: &Waveform,
     file_path: &str,
     cue_points: &[CuePoint],
 ) -> Result<Vec<u8>> {
     let mut buffer = Vec::with_capacity(128 * 1024);
 
-    // Build sections first to calculate sizes
     let ppth_section = generate_ppth_section(file_path);
-    let pqtz_section = generate_pqtz_section(beat_grid);
-    let pwav_section = generate_pwav_section(&waveform.preview);
     let pwv3_section = generate_pwv3_section(&waveform.detail);
     let pwv4_section = generate_pwv4_section(&waveform.color_preview);
     let pwv5_section = generate_pwv5_section(&waveform.detail);
-    let pcob_section = if !cue_points.is_empty() {
-        generate_pcob_section(cue_points)
+
+    // rekordbox always writes both cue lists (hot=1 then memory=0), even empty.
+    let (pcob_hot, pcob_mem) = if cue_points.is_empty() {
+        (generate_pcob_empty(1), generate_pcob_empty(0))
     } else {
-        Vec::new()
+        (generate_pcob_section(cue_points), generate_pcob_empty(0))
     };
-    let pco2_section = if !cue_points.is_empty() {
-        generate_pco2_section(cue_points)
+    let (pco2_hot, pco2_mem) = if cue_points.is_empty() {
+        (generate_pco2_empty(1), generate_pco2_empty(0))
     } else {
-        Vec::new()
+        (generate_pco2_section(cue_points), generate_pco2_empty(0))
     };
 
-    // Calculate total file size
     let sections_size = ppth_section.len()
-        + pqtz_section.len()
-        + pwav_section.len()
         + pwv3_section.len()
-        + pwv4_section.len()
+        + pcob_hot.len()
+        + pcob_mem.len()
+        + pco2_hot.len()
+        + pco2_mem.len()
         + pwv5_section.len()
-        + pcob_section.len()
-        + pco2_section.len();
+        + pwv4_section.len();
     let header_size = 28; // PMAI header
     let total_size = header_size + sections_size;
 
-    // Write PMAI header
-    buffer.extend_from_slice(PMAI_TAG);
-    buffer.extend_from_slice(&(header_size as u32).to_be_bytes()); // len_header = absolute offset of first tag (golden=0x1c), NOT size-4
-    buffer.extend_from_slice(&(total_size as u32).to_be_bytes()); // Total file length
+    write_pmai_header(&mut buffer, total_size);
 
-    // PMAI structure version and unknown fields
-    buffer.extend_from_slice(&0u32.to_be_bytes()); // Unknown
-    buffer.extend_from_slice(&0u32.to_be_bytes()); // Unknown
-    buffer.extend_from_slice(&0u32.to_be_bytes()); // Unknown
-    buffer.extend_from_slice(&0u32.to_be_bytes()); // Unknown
-
-    // Write sections (order matters for some players)
-    buffer.extend_from_slice(&ppth_section); // Path first
-    buffer.extend_from_slice(&pqtz_section); // Beat grid
-    buffer.extend_from_slice(&pwav_section); // Preview waveform (monochrome)
-    buffer.extend_from_slice(&pwv3_section); // 3-band waveform (NXS compat)
-    buffer.extend_from_slice(&pwv4_section); // Color preview (NXS2/3000)
-    buffer.extend_from_slice(&pwv5_section); // Color detail (NXS2/3000)
-    if !pcob_section.is_empty() {
-        buffer.extend_from_slice(&pcob_section); // Basic cue points
-    }
-    if !pco2_section.is_empty() {
-        buffer.extend_from_slice(&pco2_section); // Extended cue points with colors
-    }
+    buffer.extend_from_slice(&ppth_section);
+    buffer.extend_from_slice(&pwv3_section);
+    buffer.extend_from_slice(&pcob_hot);
+    buffer.extend_from_slice(&pcob_mem);
+    buffer.extend_from_slice(&pco2_hot);
+    buffer.extend_from_slice(&pco2_mem);
+    buffer.extend_from_slice(&pwv5_section);
+    buffer.extend_from_slice(&pwv4_section);
 
     Ok(buffer)
 }
 
-/// Generate .2EX file (second extended analysis for CDJ-3000)
-/// This file contains additional analysis data for newer hardware
+/// Generate .2EX file (CDJ-3000 3-band analysis).
+/// Golden tag set / order: PPTH PWV7 PWV6 PWVC. This is NOT a copy of .EXT.
 pub fn generate_2ex_file(
-    beat_grid: &BeatGrid,
+    _beat_grid: &BeatGrid,
     waveform: &Waveform,
     file_path: &str,
-    cue_points: &[CuePoint],
+    _cue_points: &[CuePoint],
 ) -> Result<Vec<u8>> {
-    // .2EX files have the same structure as .EXT but may include additional tags
-    // For now, generate the same content as EXT with extended color support
-    generate_ext_file(beat_grid, waveform, file_path, cue_points)
+    let mut buffer = Vec::with_capacity(128 * 1024);
+
+    let ppth_section = generate_ppth_section(file_path);
+    let pwv7_section = generate_pwv7_section(&waveform.detail);
+    let pwv6_section = generate_pwv6_section(&waveform.color_preview);
+    let pwvc_section = generate_pwvc_section();
+
+    let sections_size =
+        ppth_section.len() + pwv7_section.len() + pwv6_section.len() + pwvc_section.len();
+    let header_size = 28;
+    let total_size = header_size + sections_size;
+
+    write_pmai_header(&mut buffer, total_size);
+
+    buffer.extend_from_slice(&ppth_section);
+    buffer.extend_from_slice(&pwv7_section);
+    buffer.extend_from_slice(&pwv6_section);
+    buffer.extend_from_slice(&pwvc_section);
+
+    Ok(buffer)
 }
 
 #[cfg(test)]
@@ -652,9 +800,11 @@ mod tests {
         // Check tag
         assert_eq!(&section[0..4], b"PPTH");
         
-        // Path length should be 18 characters
+        // Path length is in BYTES: (18 chars + NUL) * 2 (UTF-16) = 38
         let path_len = u32::from_be_bytes([section[12], section[13], section[14], section[15]]);
-        assert_eq!(path_len, 18);
+        assert_eq!(path_len, 38);
+        let len_header = u32::from_be_bytes([section[4], section[5], section[6], section[7]]);
+        assert_eq!(len_header, 16);
     }
     
     #[test]
@@ -662,7 +812,7 @@ mod tests {
         let grid = BeatGrid::constant_tempo(128.0, 0.0, 5000.0);
         let waveform = Waveform::default();
 
-        let data = generate_dat_file(&grid, &waveform, "/Contents/test.mp3").unwrap();
+        let data = generate_dat_file(&grid, &waveform, "/Contents/test.mp3", 5_000_000, 220_500).unwrap();
 
         // Should start with PMAI
         assert_eq!(&data[0..4], b"PMAI");
@@ -685,13 +835,17 @@ mod tests {
         // Check tag
         assert_eq!(&section[0..4], b"PWV3");
 
-        // Entry count at offset 12 (after tag, header_len, section_len)
-        let count = u32::from_be_bytes([section[12], section[13], section[14], section[15]]);
+        // len_header = 24, len_entry_bytes = 1 at offset 12, len_entries = 2 at offset 16
+        let len_header = u32::from_be_bytes([section[4], section[5], section[6], section[7]]);
+        assert_eq!(len_header, 24);
+        let entry_bytes = u32::from_be_bytes([section[12], section[13], section[14], section[15]]);
+        assert_eq!(entry_bytes, 1);
+        let count = u32::from_be_bytes([section[16], section[17], section[18], section[19]]);
         assert_eq!(count, 2);
 
-        // Section length = 20 (header) + 2 entries (1 byte each)
+        // Section length = 24 (header) + 2 entries (1 byte each)
         let section_len = u32::from_be_bytes([section[8], section[9], section[10], section[11]]);
-        assert_eq!(section_len, 22);
+        assert_eq!(section_len, 26);
     }
 
     #[test]
@@ -729,7 +883,7 @@ mod tests {
         let waveform = Waveform::default();
         let cues: Vec<CuePoint> = Vec::new();
 
-        let dat_data = generate_dat_file(&grid, &waveform, "/Contents/test.mp3").unwrap();
+        let dat_data = generate_dat_file(&grid, &waveform, "/Contents/test.mp3", 5_000_000, 220_500).unwrap();
         let ext_data = generate_ext_file(&grid, &waveform, "/Contents/test.mp3", &cues).unwrap();
 
         // EXT should be larger than DAT (includes PWV3)
