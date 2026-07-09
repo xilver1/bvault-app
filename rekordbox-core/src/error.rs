@@ -36,6 +36,9 @@ pub enum Error {
 
     #[error("Validation error: {0}")]
     Validation(String),
+
+    #[error("Device library error: {0}")]
+    DeviceLibrary(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

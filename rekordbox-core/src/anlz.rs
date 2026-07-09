@@ -17,6 +17,7 @@ use crate::track::{BeatGrid, Waveform, WaveformPreview, WaveformDetail, Waveform
 const PMAI_TAG: &[u8; 4] = b"PMAI";
 const PQTZ_TAG: &[u8; 4] = b"PQTZ";
 const PWAV_TAG: &[u8; 4] = b"PWAV";
+const PWV2_TAG: &[u8; 4] = b"PWV2"; // 100-column preview overview (deck strip)
 const PWV3_TAG: &[u8; 4] = b"PWV3"; // 3-band waveform for NXS compatibility
 const PWV4_TAG: &[u8; 4] = b"PWV4"; // Color preview waveform (1200×6 bytes)
 const PWV5_TAG: &[u8; 4] = b"PWV5";
@@ -35,18 +36,19 @@ pub fn generate_dat_file(
     // Build sections first to calculate sizes
     let pqtz_section = generate_pqtz_section(beat_grid);
     let pwav_section = generate_pwav_section(&waveform.preview);
+    let pwv2_section = generate_pwv2_section(&waveform.preview);
     let pwv5_section = generate_pwv5_section(&waveform.detail);
     let ppth_section = generate_ppth_section(file_path);
     
     // Calculate total file size
-    let sections_size = pqtz_section.len() + pwav_section.len() + 
+    let sections_size = pqtz_section.len() + pwav_section.len() + pwv2_section.len() +
                         pwv5_section.len() + ppth_section.len();
     let header_size = 28; // PMAI header
     let total_size = header_size + sections_size;
     
     // Write PMAI header
     buffer.extend_from_slice(PMAI_TAG);
-    buffer.extend_from_slice(&(header_size as u32 - 4).to_be_bytes()); // Header length after tag
+    buffer.extend_from_slice(&(header_size as u32).to_be_bytes()); // len_header = absolute offset of first tag (golden=0x1c), NOT size-4
     buffer.extend_from_slice(&(total_size as u32).to_be_bytes()); // Total file length
     
     // PMAI structure version and unknown fields
@@ -58,10 +60,41 @@ pub fn generate_dat_file(
     // Write sections
     buffer.extend_from_slice(&ppth_section); // Path first
     buffer.extend_from_slice(&pqtz_section); // Beat grid
-    buffer.extend_from_slice(&pwav_section); // Preview waveform
+    buffer.extend_from_slice(&pwav_section); // Preview waveform (400-col)
+    buffer.extend_from_slice(&pwv2_section); // Preview waveform (100-col, deck overview)
     buffer.extend_from_slice(&pwv5_section); // Detail waveform
     
     Ok(buffer)
+}
+
+/// Generate PWV2 (100-column preview waveform) — the low-res overview strip
+/// rekordbox draws above the main waveform. Golden layout:
+///   fourcc | len_header=20 | len_tag=120 | len_entries=100 | 0x00010000 | 100 data bytes
+/// Data is the 400-column PWAV downsampled to 100 by taking the max of each
+/// group of 4 columns (preserves peaks so the overview looks right).
+fn generate_pwv2_section(preview: &WaveformPreview) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    buffer.extend_from_slice(PWV2_TAG);
+    let header_len = 20u32;
+    let section_len = 20u32 + 100;
+    buffer.extend_from_slice(&header_len.to_be_bytes());
+    buffer.extend_from_slice(&section_len.to_be_bytes());
+    buffer.extend_from_slice(&100u32.to_be_bytes());       // entry count
+    buffer.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // constant in golden
+
+    // Downsample 400 -> 100: max byte over each group of 4 source columns.
+    for i in 0..100 {
+        let mut peak = 0u8;
+        for j in 0..4 {
+            let idx = i * 4 + j;
+            if idx < preview.columns.len() {
+                let v = preview.columns[idx].to_byte();
+                if v > peak { peak = v; }
+            }
+        }
+        buffer.push(peak);
+    }
+    buffer
 }
 
 /// Generate PQTZ (beat grid) section
@@ -72,18 +105,19 @@ fn generate_pqtz_section(beat_grid: &BeatGrid) -> Vec<u8> {
     buffer.extend_from_slice(PQTZ_TAG);
     
     // Calculate section size
-    // Header: 4 (tag) + 4 (header_len) + 4 (section_len) + 4 (unknown) + 4 (unknown) + 4 (count) = 24 bytes
-    // Each beat: 8 bytes
-    let header_len = 24u32 - 4; // Length after tag
+    // Header: fourcc(4) + len_header(4) + len_tag(4) + unk1(4) + unk2(4) + len_beats(4) = 24 bytes
+    // Each beat: 8 bytes (beat_number u16, tempo u16, time_ms u32)
+    // len_header is the header SIZE (24), NOT "length after tag". Golden stores 0x18.
+    let header_len = 24u32;
     let beat_data_len = beat_grid.beats.len() * 8;
     let section_len = 24 + beat_data_len;
     
     buffer.extend_from_slice(&header_len.to_be_bytes());
     buffer.extend_from_slice(&(section_len as u32).to_be_bytes());
     
-    // Unknown fields
+    // unk1 = 0, unk2 = 0x00080000 (constant in golden; marks a valid beat grid)
     buffer.extend_from_slice(&0u32.to_be_bytes());
-    buffer.extend_from_slice(&0u32.to_be_bytes());
+    buffer.extend_from_slice(&0x0008_0000u32.to_be_bytes());
     
     // Beat count
     buffer.extend_from_slice(&(beat_grid.beats.len() as u32).to_be_bytes());
@@ -109,8 +143,9 @@ fn generate_pwav_section(preview: &WaveformPreview) -> Vec<u8> {
     buffer.extend_from_slice(PWAV_TAG);
     
     // Header structure
-    // 4 (tag) + 4 (header_len) + 4 (section_len) + 4 (entry_count) + 4 (unknown) = 20 bytes header
-    let header_len = 20u32 - 4;
+    // fourcc(4) + len_header(4) + len_tag(4) + len_entries(4) + unk(4) = 20 bytes
+    // len_header is header SIZE (20). field4 = 0x00010000 in golden.
+    let header_len = 20u32;
     let section_len = 20u32 + 400; // Header + 400 bytes waveform
     
     buffer.extend_from_slice(&header_len.to_be_bytes());
@@ -119,8 +154,8 @@ fn generate_pwav_section(preview: &WaveformPreview) -> Vec<u8> {
     // Entry count (400)
     buffer.extend_from_slice(&400u32.to_be_bytes());
     
-    // Unknown
-    buffer.extend_from_slice(&0u32.to_be_bytes());
+    // unk = 0x00010000 (constant in golden)
+    buffer.extend_from_slice(&0x0001_0000u32.to_be_bytes());
     
     // Waveform data - exactly 400 bytes
     for i in 0..400 {
@@ -510,7 +545,7 @@ pub fn generate_ext_file(
 
     // Write PMAI header
     buffer.extend_from_slice(PMAI_TAG);
-    buffer.extend_from_slice(&(header_size as u32 - 4).to_be_bytes()); // Header length after tag
+    buffer.extend_from_slice(&(header_size as u32).to_be_bytes()); // len_header = absolute offset of first tag (golden=0x1c), NOT size-4
     buffer.extend_from_slice(&(total_size as u32).to_be_bytes()); // Total file length
 
     // PMAI structure version and unknown fields

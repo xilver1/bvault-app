@@ -19,7 +19,9 @@ use rekordbox_core::{
     PdbBuilder, TrackAnalysis,
     generate_dat_file, generate_ext_file, generate_2ex_file, generate_anlz_path,
     generate_devsetting, generate_djprofile,
-    generate_xml, XmlExportOptions,   // <-- add this line
+    generate_xml, XmlExportOptions,
+    build_export_library, build_devlib_backup_json, devlib_backup_filename,
+    DeviceLibraryOptions, PlaylistSpec,
 };
 
 /// Export analyzed tracks to Pioneer USB format
@@ -94,6 +96,10 @@ pub fn export_usb_with_profile(
     std::fs::write(rekordbox_dir.join("rekord-export.xml"), xml)?;
     info!("Wrote rekord-export.xml");
 
+    // --- Device Library Plus (rekordbox 6.6.5+) ---------------------------
+    // rekordbox PC validates this layer independently of export.pdb and
+    // reports "Device library is corrupted" if it is missing. CDJs ignore it.
+    write_device_library(tracks, playlists, output_dir, &rekordbox_dir, &backup_dir)?;
 
     // Write DEVSETTING.DAT
     let devsetting_data = generate_devsetting();
@@ -162,6 +168,119 @@ pub fn export_usb_with_profile(
     info!("Export complete: {} tracks, {} playlists", tracks.len(), playlists.len());
     
     Ok(())
+}
+
+/// Generate the Device Library Plus layer: the encrypted `exportLibrary.db`
+/// and its `DeviceLibBackup/rbDevLibBaInfo_<id>.json` companion.
+fn write_device_library(
+    tracks: &[TrackAnalysis],
+    playlists: &HashMap<String, Vec<u32>>,
+    output_dir: &Path,
+    rekordbox_dir: &Path,
+    backup_dir: &Path,
+) -> anyhow::Result<()> {
+    // Deterministic device identity derived from the export contents, so the
+    // same library reproduces the same ids across runs. `master_db_id` is a
+    // 31-bit positive int (matches golden's magnitude); `uuid` is 32 hex chars.
+    let seed = device_seed(tracks, playlists);
+    let master_db_id = (seed & 0x7fff_ffff) as i64;
+    let uuid = format_uuid(seed);
+    let created_date = today_iso();
+
+    let opts = DeviceLibraryOptions {
+        master_db_id,
+        uuid,
+        created_date,
+        device_name: String::new(),
+    };
+
+    // Build a stable, ordered playlist list (HashMap iteration order is not
+    // stable, so sort by name for determinism). Playlist ids are 1-based.
+    let mut names: Vec<&String> = playlists.keys().filter(|n| !n.is_empty()).collect();
+    names.sort();
+    let specs: Vec<PlaylistSpec> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| PlaylistSpec {
+            id: (i as i64) + 1,
+            name: name.as_str(),
+            content_ids: &playlists[*name],
+        })
+        .collect();
+
+    // exportLibrary.db
+    let db_path = rekordbox_dir.join("exportLibrary.db");
+    build_export_library(&db_path, tracks, &specs, &opts)
+        .map_err(|e| anyhow::anyhow!("building exportLibrary.db: {e}"))?;
+    info!(
+        "Wrote exportLibrary.db ({} bytes)",
+        fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0)
+    );
+
+    // DeviceLibBackup/rbDevLibBaInfo_<id>.json
+    let json = build_devlib_backup_json(&opts)
+        .map_err(|e| anyhow::anyhow!("building device backup json: {e}"))?;
+    let json_path = backup_dir.join(devlib_backup_filename(&opts));
+    fs::write(&json_path, json)?;
+    debug!("Wrote {}", json_path.display());
+
+    // `output_dir` is currently unused here but kept in the signature for when
+    // artwork/image paths (which are USB-root relative) get wired in.
+    let _ = output_dir;
+    Ok(())
+}
+
+/// Derive a stable 64-bit seed from the export's track ids and playlist names.
+fn device_seed(tracks: &[TrackAnalysis], playlists: &HashMap<String, Vec<u32>>) -> u64 {
+    // FNV-1a over track ids and sorted playlist names — no extra deps.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let fnv = |h: &mut u64, byte: u8| {
+        *h ^= byte as u64;
+        *h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    for t in tracks {
+        for b in t.id.to_le_bytes() {
+            fnv(&mut hash, b);
+        }
+    }
+    let mut names: Vec<&String> = playlists.keys().collect();
+    names.sort();
+    for n in names {
+        for b in n.as_bytes() {
+            fnv(&mut hash, *b);
+        }
+    }
+    // Avoid a zero seed for empty exports.
+    if hash == 0 { 0x1234_5678_9abc_def0 } else { hash }
+}
+
+/// Format a 64-bit seed as a 32-hex-char UUID (seed repeated to fill 128 bits).
+fn format_uuid(seed: u64) -> String {
+    let hi = seed;
+    let lo = seed.rotate_left(17) ^ 0xa5a5_a5a5_a5a5_a5a5;
+    format!("{hi:016x}{lo:016x}")
+}
+
+/// Current date as `YYYY-MM-DD` (UTC). Uses only std.
+fn today_iso() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Days since epoch → civil date (Howard Hinnant's algorithm).
+    let days = (secs / 86_400) as i64;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 /// Validate USB filesystem requirements

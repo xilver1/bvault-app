@@ -281,18 +281,33 @@ impl PdbBuilder {
         
         let page_count = next_page_index; // first index past all real pages
 
-        // empty_candidate scheme (matches golden; rekordbox validates this):
-        //   empty tables -> their reserved zeroed page (last_data_page + 1, already allocated)
+        // empty_candidate scheme (matches golden; rekordbox's Page Manager
+        // validates this on open):
+        //   empty tables -> their reserved zeroed page (last_data_page + 1)
         //   data tables  -> a distinct phantom page beyond the file
-        //   next_unused_page is above all of them and equals none
+        //   next_unused_page is strictly above every phantom
+        //
+        // CRITICAL: each data table's LAST data page must have its next_page
+        // (0x0C) point to THAT table's own phantom empty_candidate — not the
+        // global next_unused. Golden gives every table a distinct phantom and
+        // terminates its page chain there; pointing them all at one page makes
+        // the page-chain graph malformed and the Page Manager rejects the file
+        // ("Page Manager Open returns ERROR").
         let mut phantom = page_count;
+        // Remember, per table, the empty_candidate and the last data page to patch.
+        let mut patch_targets: Vec<(u32 /*last_data_page*/, u32 /*empty_candidate*/)> = Vec::new();
         for info in &table_infos {
             let has_data = info.last_data_page > info.index_page_idx;
             let empty_candidate = if has_data {
-                let p = phantom; phantom += 1; p
+                let p = phantom;
+                phantom += 1;
+                p
             } else {
                 info.last_data_page + 1
             };
+            if has_data {
+                patch_targets.push((info.last_data_page, empty_candidate));
+            }
             header.add_table(TablePointer::new(
                 info.page_type,
                 empty_candidate,
@@ -301,14 +316,17 @@ impl PdbBuilder {
             ));
         }
         let final_next_unused = phantom; // strictly above every phantom empty_candidate
-        
-        // Patch all DATA pages: set next_page (0x0C) to final_next_unused
-        // This matches what golden files have - DATA pages point to empty_candidate
-        for page in all_pages.iter_mut().skip(1) {  // Skip header page
-            let flags = page[0x1B];
-            if flags == 0x24 || flags == 0x34 {  // DATA page
-                page[0x0C..0x10].copy_from_slice(&final_next_unused.to_le_bytes());
-            }
+
+        // Patch each data table's LAST data page: next_page (0x0C) -> that
+        // table's phantom empty_candidate. Interior data pages already point to
+        // their real successor from build_table_with_sequence and are left as-is.
+        for (last_data_page, empty_candidate) in &patch_targets {
+            let page = &mut all_pages[*last_data_page as usize];
+            debug_assert!(
+                matches!(page[0x1B], 0x24 | 0x34),
+                "patch target is not a DATA page"
+            );
+            page[0x0C..0x10].copy_from_slice(&empty_candidate.to_le_bytes());
         }
         
         // Update header with final values
