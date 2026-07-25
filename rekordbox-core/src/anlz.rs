@@ -599,7 +599,7 @@ fn generate_pcob_section(cue_points: &[CuePoint]) -> Vec<u8> {
     buffer.extend_from_slice(&0xffff_ffffu32.to_be_bytes());
 
     // Write cue entries
-    for (i, cue) in cue_points.iter().enumerate() {
+    for cue in cue_points {
         // Entry header (4 bytes): "PCP1" for cue entry or similar marker
         buffer.extend_from_slice(b"PCP\x01");
 
@@ -640,11 +640,6 @@ pub fn generate_anlz_path(track_id: u32) -> String {
     let dir1 = format!("P{:03}", (track_id / 256) % 1000);
     let dir2 = format!("{:08X}", track_id);
     format!("PIONEER/USBANLZ/{}/{}/ANLZ0000.DAT", dir1, dir2)
-}
-
-/// Generate the full filesystem path for ANLZ file
-pub fn generate_anlz_full_path(usb_root: &str, track_id: u32) -> String {
-    format!("{}/{}", usb_root.trim_end_matches('/'), generate_anlz_path(track_id))
 }
 
 /// Generate .EXT file (extended analysis for Nexus+ players)
@@ -857,6 +852,7 @@ mod tests {
                 time_ms: 5000.0,
                 loop_ms: 0.0,
                 comment: None,
+                color: None,
             },
             CuePoint {
                 hot_cue: 2,
@@ -864,6 +860,7 @@ mod tests {
                 time_ms: 10000.0,
                 loop_ms: 4000.0,
                 comment: None,
+                color: None,
             },
         ];
 
@@ -905,6 +902,7 @@ mod tests {
                 time_ms: 1000.0,
                 loop_ms: 0.0,
                 comment: None,
+                color: None,
             },
         ];
 

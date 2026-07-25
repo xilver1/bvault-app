@@ -5,9 +5,6 @@
 //! - djprofile.nxs: DJ profile information
 //! - Artwork: Album art thumbnails and full images
 
-use std::io::Write;
-use crate::error::Result;
-
 /// rekordbox version string for DEVSETTING.DAT
 const REKORDBOX_VERSION: &str = "6.8.4";
 
@@ -103,87 +100,6 @@ pub fn artwork_thumbnail_name(artwork_id: u32) -> String {
 /// Generate artwork filename for full-size image
 pub fn artwork_full_name(artwork_id: u32) -> String {
     format!("a{}_m.jpg", artwork_id)
-}
-
-/// DeviceLibBackup info JSON structure
-#[derive(Debug, Clone)]
-pub struct DeviceBackupInfo {
-    pub uuid: String,
-    pub device_name: String,
-    pub filesystem: String,
-    pub backup_pc_name: String,
-}
-
-impl DeviceBackupInfo {
-    /// Generate a new UUID for the device
-    pub fn new_uuid() -> String {
-        // Generate a simple UUID-like string (32 hex chars)
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        format!("{:032x}", timestamp)
-    }
-}
-
-/// Generate rbDevLibBaInfo JSON content
-pub fn generate_device_backup_info(info: &DeviceBackupInfo, pc_id: u32) -> String {
-    let now = chrono_lite_format();
-    
-    format!(r#"{{
-  "uuid": "{}",
-  "info": [
-    {{
-      "device_id": "{}",
-      "device_name": "{}",
-      "background_color": "0",
-      "background_color_libplus": "0",
-      "device_filesystem": "{}",
-      "backup_pc_id": "{}",
-      "backup_pc_name": "{}",
-      "backup_location": "1",
-      "backup_generation": "1",
-      "backup_date": "{}",
-      "backup_file_name": "rbDevLibBa_{}_{}.zip"
-    }}
-  ]
-}}"#,
-        info.uuid,
-        info.uuid,
-        info.device_name,
-        info.filesystem,
-        pc_id,
-        info.backup_pc_name,
-        now,
-        pc_id,
-        info.uuid
-    )
-}
-
-/// Simple date/time formatter (YYYY/MM/DD HH:MM:SS)
-fn chrono_lite_format() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    
-    // Simple UTC conversion (not accurate for all timezones but sufficient)
-    let days = secs / 86400;
-    let time_secs = secs % 86400;
-    let hours = time_secs / 3600;
-    let minutes = (time_secs % 3600) / 60;
-    let seconds = time_secs % 60;
-    
-    // Approximate date calculation (good enough for backup timestamp)
-    let year = 1970 + (days / 365);
-    let day_of_year = days % 365;
-    let month = (day_of_year / 30) + 1;
-    let day = (day_of_year % 30) + 1;
-    
-    format!("{}/{:02}/{:02} {:02}:{:02}:{:02}",
-            year, month.min(12), day.min(28), hours, minutes, seconds)
 }
 
 #[cfg(test)]

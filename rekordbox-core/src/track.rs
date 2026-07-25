@@ -113,15 +113,6 @@ impl Key {
         format!("{}{}", pos, suffix)
     }
     
-    /// Convert to Open Key notation (1m-12d)
-    pub fn to_open_key(&self) -> String {
-        // Open Key maps differently
-        let open_key_map = [1, 8, 3, 10, 5, 12, 7, 2, 9, 4, 11, 6];
-        let pos = open_key_map[self.pitch_class as usize];
-        let suffix = if self.is_major { "d" } else { "m" };
-        format!("{}{}", pos, suffix)
-    }
-    
     /// Convert to Rekordbox's internal key ID (1-24)
     /// Based on observed export.pdb values
     pub fn to_rekordbox_id(&self) -> u8 {

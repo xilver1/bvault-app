@@ -1,5 +1,9 @@
 # Empirical Findings from Golden PDB Analysis
 
+> **Reference document.** These are byte-level `export.pdb` findings from the
+> golden-file analysis, still accurate for the PDB format. It predates the
+> Device Library Plus work — for the project's current state see `STATUS.md`.
+
 **Date:** January 18, 2026  
 **Golden File:** rekordbox 6.x export with 5 tracks  
 **Methodology:** Byte-level comparison and structural analysis

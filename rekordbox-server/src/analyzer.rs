@@ -3,7 +3,7 @@
 //! Memory-efficient audio processing using Symphonia for decoding.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::fs::File;
 
 use symphonia::core::audio::{AudioBufferRef, Signal};
@@ -289,7 +289,7 @@ fn analyze_track(
     let key = None;
     
     // Generate beat grid
-    let first_beat_ms = detect_first_beat(&samples, sample_rate, bpm);
+    let first_beat_ms = detect_first_beat(&samples, sample_rate);
     let beat_grid = BeatGrid::constant_tempo(bpm, first_beat_ms, duration_secs * 1000.0);
     
     // Generate waveforms
@@ -466,7 +466,7 @@ fn detect_bpm(samples: &[f32], sample_rate: u32) -> anyhow::Result<f64> {
 }
 
 /// Find first beat position in milliseconds
-fn detect_first_beat(samples: &[f32], sample_rate: u32, bpm: f64) -> f64 {
+fn detect_first_beat(samples: &[f32], sample_rate: u32) -> f64 {
     if samples.is_empty() {
         return 0.0;
     }

@@ -1,137 +1,142 @@
 # rekord-export
 
-Rust-based Pioneer CDJ USB export generator. Creates USB drives compatible with CDJ-2000 and newer players without requiring Rekordbox software.
+Rust tooling that generates Pioneer rekordbox-compatible USB exports directly
+from a music library — no PC running rekordbox required. The goal is exports
+that both **rekordbox PC** (the strictest validator) and **CDJ-2000-and-newer**
+hardware accept.
+
+Pioneer's export formats are undocumented and proprietary; this project builds
+them from the byte-level reverse engineering by
+[Deep Symmetry](https://djl-analysis.deepsymmetry.org/rekordbox-export-analysis/)
+plus a golden-file harness (see `docs/`).
+
+> **Status:** ~70% of the target feature set is implemented. `export.pdb`, the
+> Device Library Plus layer, ANLZ (`.DAT`/`.EXT`/`.2EX`), and the rekordbox XML
+> path all generate; several items remain open. See
+> [`docs/STATUS.md`](docs/STATUS.md) for the current picture.
 
 ## Architecture
 
 ```
-┌─────────────────┐     Unix Socket      ┌─────────────────┐
-│  rekordbox-cli  │ ◄──────────────────► │ rekordbox-server│
-│   (Termux)      │                      │   (NAS/x86)     │
-│   ~400KB        │                      │                 │
-└─────────────────┘                      └────────┬────────┘
-                                                  │
-                                         ┌────────▼────────┐
-                                         │  rekordbox-core │
-                                         │ (PDB/ANLZ gen)  │
-                                         └─────────────────┘
+┌─────────────────┐        TCP / JSON        ┌─────────────────┐
+│  rekordbox-cli  │ ◄──────────────────────► │ rekordbox-server│
+│   (Termux)      │      (line protocol)     │   (NAS / x86)   │
+└─────────────────┘                          └────────┬────────┘
+                                                      │
+                                             ┌────────▼────────┐
+                                             │  rekordbox-core │
+                                             │ (PDB/ANLZ/XML/  │
+                                             │  device library)│
+                                             └─────────────────┘
 ```
 
-- **rekordbox-core**: Binary format library for PDB (DeviceSQL) and ANLZ files
-- **rekordbox-server**: Audio analysis + export generation daemon for NAS
-- **rekordbox-cli**: Lightweight client for Termux on Android
+- **rekordbox-core** — pure-Rust library that generates every Pioneer artifact:
+  `export.pdb` (DeviceSQL), ANLZ files, the encrypted device library, the
+  rekordbox XML, and the auxiliary device files. Also provides a validator and a
+  page-aware golden-file diff (`pdbdiff` binary).
+- **rekordbox-server** — audio analysis (BPM, beat grid, waveforms via
+  Symphonia + FFT) and export orchestration; runs as a daemon on the NAS or does
+  a one-shot direct export. Optional Navidrome/Subsonic playlist integration.
+- **rekordbox-cli** — lightweight client (built for Termux on Android) that
+  drives the server over TCP.
 
-## USB Structure Generated
+## USB structure generated
 
 ```
 USB_ROOT/
 ├── PIONEER/
 │   ├── rekordbox/
-│   │   └── export.pdb          # Track database (DeviceSQL format)
-│   └── USBANLZ/
-│       └── P000/
-│           └── 00000001/
-│               ├── ANLZ0000.DAT  # Beat grid, waveforms
-│               └── ANLZ0000.EXT  # Extended analysis
+│   │   ├── export.pdb          # DeviceSQL track database
+│   │   ├── exportLibrary.db    # Device Library Plus (SQLCipher-encrypted)
+│   │   └── rekord-export.xml   # rekordbox XML (import + golden-file harness)
+│   ├── USBANLZ/Pxxx/xxxxxxxx/
+│   │   ├── ANLZ0000.DAT        # beat grid, preview waveforms (all CDJs)
+│   │   ├── ANLZ0000.EXT        # detail/colour waveforms, cues (Nexus+)
+│   │   └── ANLZ0000.2EX        # 3-band analysis (CDJ-3000)
+│   ├── DeviceLibBackup/
+│   │   └── rbDevLibBaInfo_<id>.json
+│   ├── Artwork/                # (reserved; artwork generation is not wired up)
+│   ├── DEVSETTING.DAT
+│   └── djprofile.nxs
 └── Contents/
-    └── *.mp3, *.flac, etc.     # Audio files
+    └── *.mp3, *.flac, ...      # audio files (flat + Artist/Album/ hierarchy)
 ```
 
 ## Building
 
 ```bash
-# Build all crates
-cargo build --release
-
-# Build only the CLI (for Termux)
-cargo build --release -p rekordbox-cli
-
-# Cross-compile CLI for Android/aarch64
+cargo build --release                 # all crates
+cargo build --release -p rekordbox-cli # CLI only (for Termux)
 cargo build --release -p rekordbox-cli --target aarch64-linux-android
+
+cargo test --workspace                # run the test suite
 ```
+
+Building `rekordbox-core` compiles a vendored SQLCipher (for the device
+library), which requires a C toolchain plus **Perl** and **NASM** on the host.
 
 ## Usage
 
-### Direct Export (no server)
+### Direct export (no server)
 
 ```bash
-# Export music folder directly to USB
 rekordbox-server --music-dir /path/to/music --export /media/usb
 ```
 
-### Server Mode
+### Server mode
 
 On the NAS:
+
 ```bash
-# Start server
-rekordbox-server --music-dir /mnt/ssd/pre-export --socket /tmp/rekordbox.sock
+rekordbox-server --music-dir /mnt/ssd/pre-export --bind 0.0.0.0:6969
 ```
 
 From Termux (or any client):
+
 ```bash
-# Check server status
-rekordbox status
-
-# Analyze tracks
-rekordbox analyze
-
-# Export to USB
+rekordbox status        # server health
+rekordbox analyze       # analyze the library
 rekordbox export /storage/usb
-
-# List analyzed tracks
-rekordbox list
-
-# Cache management
+rekordbox list          # list analyzed tracks
 rekordbox cache-stats
 rekordbox cache-clear
 ```
 
-## PDB Format Implementation
+Navidrome playlists can drive the export by passing `--navidrome-url`,
+`--navidrome-user`, and `--navidrome-pass` (or the matching `NAVIDROME_*`
+environment variables); otherwise playlists are inferred from folder structure.
 
-The export.pdb file uses Pioneer's DeviceSQL format:
-- 4096-byte pages
-- Little-endian byte order
-- Tables: tracks, artists, albums, genres, keys, playlists
-- Row index grows backward from page end
-- Heap grows forward from offset 0x28
-- DeviceSQL strings: short ASCII (flag|1), long ASCII (0x40), UTF-16LE (0x90)
+## Format notes
 
-### Track Row Structure (94+ bytes)
-- Subtype, sample_rate, file_size, artwork_id, key_id
-- artist_id, album_id, genre_id, tempo (BPM × 100)
-- 21 string offsets pointing to: title, artist, file_path, analyze_path, etc.
+**`export.pdb`** — DeviceSQL: 4096-byte pages, little-endian, all 20 tables
+present. The row heap grows forward from `0x28`; the row-offset index grows
+backward from the page end. Strings use the DeviceSQL short-ASCII / long-ASCII /
+UTF-16LE encodings.
 
-## ANLZ Format Implementation
+**ANLZ (`.DAT`/`.EXT`/`.2EX`)** — big-endian tagged sections: `PPTH` (path),
+`PQTZ` (beat grid), `PWAV`/`PWV2` (preview waveforms), `PWV3`–`PWV7` (colour and
+3-band waveforms), `PCOB`/`PCO2` (cues), `PVBR` (VBR seek index).
 
-Analysis files (.DAT, .EXT) are **big-endian** and contain tagged sections:
-- **PPTH**: File path (UTF-16BE encoded)
-- **PQTZ**: Beat grid (beat number, tempo×100, time_ms)
-- **PWAV**: Preview waveform (400 bytes, 5-bit height + 3-bit whiteness)
-- **PWV5**: Detail waveform (150 entries/sec, RGB + height)
+**Device Library Plus** — `exportLibrary.db` is a SQLCipher-encrypted SQLite DB
+(22 tables) that rekordbox PC validates independently of `export.pdb`; without
+it rekordbox reports "device library corrupted" even for a byte-perfect PDB.
+CDJs ignore this layer.
 
-## Testing Without CDJ Hardware
+## Testing without CDJ hardware
 
-1. **Mixxx DJ** (v2.3+): Import USB as Rekordbox library
-2. **rekordcrate CLI**: `rekordcrate dump-pdb export.pdb`
-3. **Kaitai Web IDE**: Visual binary inspection at ide.kaitai.io
-
-## Key Differences From Original Broken Implementation
-
-| Issue | Before | After |
-|-------|--------|-------|
-| edition | "2024" (invalid) | "2021" |
-| Track pages | `vec![0u8; PAGE_SIZE]` (empty) | Actual row data with strings |
-| Row index | Missing | Backward-growing from page end |
-| String encoding | None | DeviceSQL format (short/long/UTF-16) |
-| Page headers | Incomplete | Full header with row counts, free_size |
-| ANLZ byte order | Little-endian | Big-endian (correct) |
+- **rekordbox PC** — the strictest validator; the primary compatibility target.
+- **rekordcrate** — `rekordcrate dump-pdb export.pdb` to inspect a generated PDB.
+- **Kaitai Web IDE** — visual binary inspection at `ide.kaitai.io`.
+- **`pdbdiff`** — `cargo run -p rekordbox-core --bin pdbdiff -- golden.pdb mine.pdb`
+  localises every differing byte to a page and annotates known header fields.
 
 ## References
 
-- [Deep Symmetry Analysis](https://djl-analysis.deepsymmetry.org/rekordbox-export-analysis/exports.html)
-- [rekordcrate](https://github.com/Holzhaus/rekordcrate) - Rust PDB/ANLZ library
-- [REX](https://github.com/kimtore/rex) - Go implementation
-- [crate-digger](https://github.com/Deep-Symmetry/crate-digger) - Java + documentation
+- [Deep Symmetry — rekordbox export analysis](https://djl-analysis.deepsymmetry.org/rekordbox-export-analysis/exports.html)
+- [crate-digger](https://github.com/Deep-Symmetry/crate-digger) — Kaitai specs + docs
+- [rekordcrate](https://github.com/Holzhaus/rekordcrate) — Rust PDB/ANLZ library
+- [REX](https://github.com/kimtore/rex) — Go PDB generation reference
+- [pyrekordbox](https://github.com/dylanljones/pyrekordbox) — Python library
 
 ## License
 

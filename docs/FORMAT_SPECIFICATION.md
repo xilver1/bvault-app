@@ -1,5 +1,8 @@
 # Pioneer rekordbox USB Export Format Specification
 
+> **Reference document** describing the on-disk formats. For which parts are
+> implemented and what is still open, see `STATUS.md`.
+
 Based on reverse engineering of actual rekordbox 6.8.4 USB exports and Deep Symmetry documentation.
 
 ## Directory Structure

@@ -47,12 +47,6 @@ struct TrackInfo {
     analyze_path: String,
 }
 
-/// Artwork information for the Artwork table
-pub struct ArtworkInfo {
-    pub id: u32,
-    pub path: String,
-}
-
 /// Playlist information
 pub struct PlaylistInfo {
     pub id: u32,
@@ -344,13 +338,6 @@ impl PdbBuilder {
         Ok(output)
     }
     
-    /// Build a single table (index page + data pages)
-    /// Returns: (index_page, data_pages, index_page_idx, last_data_page_idx)
-    fn build_table(&self, page_type: PageType, next_idx: &mut u32) -> Result<(Vec<u8>, Vec<Vec<u8>>, u32, u32)> {
-        let (index, data, idx, last, _) = self.build_table_with_sequence(page_type, next_idx, 1)?;
-        Ok((index, data, idx, last))
-    }
-    
     /// Build a single table with sequence tracking
     /// Returns: (index_page, data_pages, index_page_idx, last_data_page_idx, new_sequence)
     fn build_table_with_sequence(&self, page_type: PageType, next_idx: &mut u32, mut sequence: u32) -> Result<(Vec<u8>, Vec<Vec<u8>>, u32, u32, u32)> {
@@ -424,7 +411,6 @@ impl PdbBuilder {
             return self.build_empty_data_pages(next_idx);
         }
         
-        let first_page = *next_idx;
         let mut pages: Vec<Vec<u8>> = Vec::new();
         let mut current_page = PageBuilder::new(*next_idx, PageType::Tracks);
         *next_idx += 1;
@@ -452,7 +438,6 @@ impl PdbBuilder {
             return self.build_empty_data_pages(next_idx);
         }
         
-        let first_page = *next_idx;
         let mut pages: Vec<Vec<u8>> = Vec::new();
         let mut current_page = PageBuilder::new(*next_idx, PageType::Genres);
         *next_idx += 1;
@@ -483,7 +468,6 @@ impl PdbBuilder {
             return self.build_empty_data_pages(next_idx);
         }
         
-        let first_page = *next_idx;
         let mut pages: Vec<Vec<u8>> = Vec::new();
         let mut current_page = PageBuilder::new(*next_idx, PageType::Artists);
         *next_idx += 1;
@@ -514,7 +498,6 @@ impl PdbBuilder {
             return self.build_empty_data_pages(next_idx);
         }
         
-        let first_page = *next_idx;
         let mut pages: Vec<Vec<u8>> = Vec::new();
         let mut current_page = PageBuilder::new(*next_idx, PageType::Albums);
         *next_idx += 1;
@@ -545,7 +528,6 @@ impl PdbBuilder {
             return self.build_empty_data_pages(next_idx);
         }
         
-        let first_page = *next_idx;
         let mut pages: Vec<Vec<u8>> = Vec::new();
         let mut current_page = PageBuilder::new(*next_idx, PageType::Labels);
         *next_idx += 1;
@@ -576,7 +558,6 @@ impl PdbBuilder {
             return self.build_empty_data_pages(next_idx);
         }
         
-        let first_page = *next_idx;
         let mut pages: Vec<Vec<u8>> = Vec::new();
         let mut current_page = PageBuilder::new(*next_idx, PageType::Keys);
         *next_idx += 1;
@@ -604,7 +585,6 @@ impl PdbBuilder {
     
     /// Build color data pages (always includes 8 default colors)
     fn build_color_data_pages(&self, next_idx: &mut u32) -> Result<(Vec<Vec<u8>>, bool)> {
-        let first_page = *next_idx;
         let mut pages: Vec<Vec<u8>> = Vec::new();
         let mut current_page = PageBuilder::new(*next_idx, PageType::Colors);
         *next_idx += 1;
@@ -636,7 +616,6 @@ impl PdbBuilder {
             return self.build_empty_data_pages(next_idx);
         }
         
-        let first_page = *next_idx;
         let mut pages: Vec<Vec<u8>> = Vec::new();
         let mut current_page = PageBuilder::new(*next_idx, PageType::PlaylistTree);
         *next_idx += 1;
@@ -673,7 +652,6 @@ impl PdbBuilder {
             return self.build_empty_data_pages(next_idx);
         }
         
-        let first_page = *next_idx;
         let mut pages: Vec<Vec<u8>> = Vec::new();
         let mut current_page = PageBuilder::new(*next_idx, PageType::PlaylistEntries);
         *next_idx += 1;
@@ -707,7 +685,6 @@ impl PdbBuilder {
             return self.build_empty_data_pages(next_idx);
         }
         
-        let first_page = *next_idx;
         let mut pages: Vec<Vec<u8>> = Vec::new();
         let mut current_page = PageBuilder::new(*next_idx, PageType::Artwork);
         *next_idx += 1;

@@ -1,5 +1,38 @@
 # Changelog
 
+The `vX.Y` labels below are internal development milestones, not published
+releases — the crate version is `0.1.0`. See `STATUS.md` for the current state.
+
+## Device Library Plus, ANLZ, and page-chain fixes (current)
+
+The milestones that moved the project from "CDJ-only, rejected by rekordbox PC"
+to "loads and plays in rekordbox PC":
+
+- **`export.pdb` page-chain fix.** Root cause of the "device library corrupted"
+  class of PDB failures: every data page's `next_page` (`0x0C`) was patched to
+  one global `next_unused`, making the page-chain graph malformed. Each data
+  table now terminates its chain at its own distinct phantom `empty_candidate`
+  (`pdb.rs`).
+- **Device Library Plus.** New `device_library.rs` generates the
+  SQLCipher-encrypted `exportLibrary.db` (22-table schema) and its backup JSON.
+  rekordbox PC validates this layer independently of `export.pdb`; without it
+  the import is rejected even for a byte-perfect PDB.
+- **ANLZ `len_header` fix.** Corrected a systematic bug where `len_header` was
+  written as "length after the tag" instead of the full header size, plus the
+  constant magic fields several tags require, across `.DAT`/`.EXT`/`.2EX`.
+- **rekordbox XML export** as a tier-1 path and golden-file harness input.
+
+## Codebase cleanup
+
+- Removed dead/superseded code (a duplicate device-backup-JSON implementation,
+  unused builder helpers, an orphaned struct, redundant page/string helpers),
+  unused imports and variables, and a `[profile.release]` block that cargo
+  silently ignored in a non-root crate.
+- Repaired the test suite, which no longer compiled after struct fields were
+  added (missing `label`/`color` in fixtures); it now builds and passes.
+- Extracted a shared `band_energy` helper in `waveform.rs`, verified to produce
+  byte-identical waveform output.
+
 ## v2.7.2 - Track Bitmask Fix
 
 ### Bug Fixes

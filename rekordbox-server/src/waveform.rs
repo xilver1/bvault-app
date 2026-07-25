@@ -7,6 +7,17 @@ use rustfft::{FftPlanner, num_complex::Complex};
 use rekordbox_core::{Waveform, WaveformPreview, WaveformDetail, WaveformColumn, WaveformColorEntry,
                      WaveformColorPreview, WaveformColorPreviewColumn};
 
+/// Average magnitude of the `fft_buffer` bins in `range` (inclusive).
+/// Returns 0.0 for an empty range. This is the per-band energy used to map
+/// bass/mid/high onto the red/green/blue channels of the color waveforms.
+fn band_energy(fft_buffer: &[Complex<f32>], range: std::ops::RangeInclusive<usize>) -> f32 {
+    if range.is_empty() {
+        return 0.0;
+    }
+    let count = (range.end() - range.start() + 1) as f32;
+    fft_buffer[range].iter().map(|c| c.norm()).sum::<f32>() / count
+}
+
 /// Waveform generator with FFT support
 pub struct WaveformGenerator {
     sample_rate: u32,
@@ -85,31 +96,10 @@ impl WaveformGenerator {
 
             fft.process(&mut fft_buffer);
 
-            // Calculate energy for each band
-            let bass_range = bass_start.max(1)..=bass_end.min(fft_size / 2);
-            let mid_range = (bass_end + 1)..=mid_end.min(fft_size / 2);
-            let high_range = (mid_end + 1)..=high_end.min(fft_size / 2);
-
-            let bass_energy: f32 = if bass_range.is_empty() { 0.0 } else {
-                fft_buffer[bass_range.clone()]
-                    .iter()
-                    .map(|c| c.norm())
-                    .sum::<f32>() / (bass_range.end() - bass_range.start() + 1) as f32
-            };
-
-            let mid_energy: f32 = if mid_range.is_empty() { 0.0 } else {
-                fft_buffer[mid_range.clone()]
-                    .iter()
-                    .map(|c| c.norm())
-                    .sum::<f32>() / (mid_range.end() - mid_range.start() + 1) as f32
-            };
-
-            let high_energy: f32 = if high_range.is_empty() { 0.0 } else {
-                fft_buffer[high_range.clone()]
-                    .iter()
-                    .map(|c| c.norm())
-                    .sum::<f32>() / (high_range.end() - high_range.start() + 1) as f32
-            };
+            // Per-band energy (bass/mid/high) → color channels.
+            let bass_energy = band_energy(&fft_buffer, bass_start.max(1)..=bass_end.min(fft_size / 2));
+            let mid_energy = band_energy(&fft_buffer, (bass_end + 1)..=mid_end.min(fft_size / 2));
+            let high_energy = band_energy(&fft_buffer, (mid_end + 1)..=high_end.min(fft_size / 2));
 
             // Calculate RMS for height
             let segment = &samples[start..end];
@@ -271,32 +261,11 @@ impl WaveformGenerator {
             // Run FFT
             fft.process(&mut fft_buffer);
             
-            // Calculate magnitude for each frequency band
-            let bass_range = bass_start.max(1)..=bass_end.min(fft_size / 2);
-            let mid_range = (bass_end + 1)..=mid_end.min(fft_size / 2);
-            let high_range = (mid_end + 1)..=high_end.min(fft_size / 2);
-            
-            let bass_energy: f32 = if bass_range.is_empty() { 0.0 } else {
-                fft_buffer[bass_range.clone()]
-                    .iter()
-                    .map(|c| c.norm())
-                    .sum::<f32>() / (bass_range.end() - bass_range.start() + 1) as f32
-            };
-            
-            let mid_energy: f32 = if mid_range.is_empty() { 0.0 } else {
-                fft_buffer[mid_range.clone()]
-                    .iter()
-                    .map(|c| c.norm())
-                    .sum::<f32>() / (mid_range.end() - mid_range.start() + 1) as f32
-            };
-            
-            let high_energy: f32 = if high_range.is_empty() { 0.0 } else {
-                fft_buffer[high_range.clone()]
-                    .iter()
-                    .map(|c| c.norm())
-                    .sum::<f32>() / (high_range.end() - high_range.start() + 1) as f32
-            };
-            
+            // Per-band energy (bass/mid/high) → color channels.
+            let bass_energy = band_energy(&fft_buffer, bass_start.max(1)..=bass_end.min(fft_size / 2));
+            let mid_energy = band_energy(&fft_buffer, (bass_end + 1)..=mid_end.min(fft_size / 2));
+            let high_energy = band_energy(&fft_buffer, (mid_end + 1)..=high_end.min(fft_size / 2));
+
             // Collect raw energies; normalization happens in a second pass below.
             let segment_end = std::cmp::min(sample_start + samples_per_entry, samples.len());
             let amplitude = if sample_start < segment_end {

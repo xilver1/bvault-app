@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use xxhash_rust::xxh3::xxh3_64;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::track::TrackAnalysis;
 
 /// File-based cache for track analysis results
@@ -144,6 +144,7 @@ mod tests {
             artist: "Test Artist".into(),
             album: None,
             genre: None,
+            label: None,
             duration_secs: 180.0,
             sample_rate: 44100,
             bit_depth: 16,

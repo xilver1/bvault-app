@@ -95,11 +95,6 @@ impl PageType {
             PageType::History,          // 19
         ]
     }
-    
-    /// Get all table types that should be included in a minimal export
-    pub fn required_types() -> &'static [PageType] {
-        Self::all_types()
-    }
 }
 
 /// Index page builder - creates the required index page for each table
@@ -256,13 +251,6 @@ impl PageBuilder {
         vec![0u8; PAGE_SIZE]
     }
     
-    /// Create an empty placeholder page with specific page index
-    /// Empty pages in rekordbox are completely zeros (type=0, flags=0x00)
-    pub fn empty_page_with_index(_page_index: u32) -> Vec<u8> {
-        // Empty/placeholder pages are completely zeros
-        vec![0u8; PAGE_SIZE]
-    }
-    
     /// Calculate how much space is available for new data
     fn available_space(&self) -> usize {
         let num_groups = (self.row_count / ROWS_PER_GROUP) + 1;
@@ -327,11 +315,6 @@ impl PageBuilder {
         }
         
         Ok(offset)
-    }
-    
-    /// Get current heap position (for calculating string offsets within a row)
-    pub fn heap_position(&self) -> usize {
-        self.heap_pos
     }
     
     /// Finalize the page and return the complete data

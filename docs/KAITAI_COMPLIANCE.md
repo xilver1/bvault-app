@@ -1,5 +1,9 @@
 # Kaitai Spec Compliance
 
+> **Reference document.** Records where the PDB implementation matches or
+> intentionally diverges from the Kaitai spec. For current project status see
+> `STATUS.md`.
+
 This document verifies that the PDB implementation matches the Kaitai struct specification (`rekordbox_pdb.ksy`) from Deep-Symmetry/crate-digger.
 
 ## Page Types (CRITICAL FIX)

@@ -348,7 +348,7 @@ fn esc(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::track::{Beat, Key};
+    use crate::track::Key;
 
     fn sample_track() -> TrackAnalysis {
         let mut grid = BeatGrid::constant_tempo(128.0, 100.0, 4000.0);

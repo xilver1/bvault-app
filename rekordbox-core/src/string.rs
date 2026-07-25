@@ -107,24 +107,6 @@ pub fn encode_isrc(isrc: &str) -> Vec<u8> {
     result
 }
 
-/// Get the encoded length of a string without actually encoding it
-pub fn encoded_length(s: &str) -> usize {
-    if s.is_empty() {
-        return 1;
-    }
-    
-    let is_ascii = s.bytes().all(|b| b < 128);
-    
-    if is_ascii && s.len() <= MAX_SHORT_ASCII_LEN {
-        1 + s.len()
-    } else if is_ascii {
-        4 + s.len()
-    } else {
-        let utf16_len: usize = s.encode_utf16().count() * 2;
-        4 + utf16_len
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,12 +152,5 @@ mod tests {
         // 3 characters * 2 bytes + 4 byte header = 10
         let len = encoded[1] as u16 | ((encoded[2] as u16) << 8);
         assert_eq!(len, 10);
-    }
-    
-    #[test]
-    fn test_encoded_length() {
-        assert_eq!(encoded_length(""), 1);
-        assert_eq!(encoded_length("foo"), 4); // 1 + 3
-        assert_eq!(encoded_length("日本語"), 4 + 6); // 4 header + 3 chars * 2 bytes
     }
 }
