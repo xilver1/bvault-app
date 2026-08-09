@@ -18,6 +18,8 @@ pub mod validate;
 pub mod auxiliary;
 pub mod xml;
 pub mod diff;
+
+#[cfg(feature = "device-library")]
 pub mod device_library;
 
 // Re-exports for convenience
@@ -34,5 +36,7 @@ pub use auxiliary::{generate_devsetting, generate_djprofile, artwork_folder_path
                     ARTWORK_FULL_SIZE};
 pub use xml::{generate_xml, XmlExportOptions};
 pub use diff::{diff_pdb, PdbDiff, PageDiff, ByteRange};
+
+#[cfg(feature = "device-library")]
 pub use device_library::{build_export_library, build_devlib_backup_json,
                          devlib_backup_filename, DeviceLibraryOptions, PlaylistSpec};

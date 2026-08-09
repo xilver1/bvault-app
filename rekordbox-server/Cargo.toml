@@ -8,7 +8,7 @@ name = "rekordbox-server"
 path = "src/main.rs"
 
 [dependencies]
-rekordbox-core = { path = "../rekordbox-core" }
+rekordbox-core = { path = "../crates/rekordbox-core", features = ["device-library"] }
 
 # Async runtime - single-threaded for memory efficiency
 tokio = { workspace = true, features = ["rt", "net", "io-util", "sync", "macros", "fs"] }

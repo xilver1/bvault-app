@@ -1,7 +1,13 @@
 [workspace]
 resolver = "2"
+
 members = [
-    "rekordbox-core",
+    "crates/rekordbox-core",
+    "crates/rekordbox-analysis",
+    "crates/rekordbox-jobs",
+    "crates/rekordbox-store",
+    "crates/rekordbox-meta",
+    "services/analysis-worker",
     "rekordbox-server",
     "rekordbox-cli",
 ]

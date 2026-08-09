@@ -1,0 +1,19 @@
+[package]
+name = "rekordbox-jobs"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+# In-cluster Postgres, so no TLS backend is pulled in. If you ever point this at
+# a TLS-only Postgres, add one of sqlx's `tls-rustls-ring` / `tls-native-tls`
+# features. Runtime queries (no `query!`) mean `cargo check` needs no live DB.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio", "postgres", "chrono", "json", "macros",
+] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# DB-backed integration tests (deferred) will add: tokio + a DATABASE_URL, or
+# `sqlx::test` / testcontainers. The current unit tests are pure and need neither.

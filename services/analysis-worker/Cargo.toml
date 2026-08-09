@@ -1,0 +1,23 @@
+[package]
+name = "rekordbox-analysis-worker"
+version.workspace = true
+edition = "2021"
+
+[[bin]]
+name = "analysis-worker"
+path = "src/main.rs"
+
+[dependencies]
+rekordbox-jobs = { path = "../../crates/rekordbox-jobs" }
+rekordbox-store = { path = "../../crates/rekordbox-store" }
+rekordbox-analysis = { path = "../../crates/rekordbox-analysis" }
+# Note: no direct rekordbox-core dep — TrackAnalysis comes back from
+# analyze_source and its Serialize impl is used transitively; nothing here names
+# a core type. And no SQLCipher/OpenSSL, since -analysis pulls -core with the
+# device-library feature OFF. This worker image stays tiny.
+
+tokio = { workspace = true, features = ["time"] } # + timers; workspace has rt/macros
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

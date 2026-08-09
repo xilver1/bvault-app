@@ -1,0 +1,28 @@
+[package]
+name = "rekordbox-gateway"
+version.workspace = true
+edition = "2021"
+
+[[bin]]
+name = "gateway"
+path = "src/main.rs"
+
+[dependencies]
+rekordbox-jobs = { path = "../../crates/rekordbox-jobs" }
+rekordbox-meta = { path = "../../crates/rekordbox-meta" }
+rekordbox-store = { path = "../../crates/rekordbox-store" }
+
+axum = "0.8"
+# Current-thread runtime (see main.rs). Workspace tokio already has rt/net/macros.
+tokio = { workspace = true }
+# The gateway owns migrations, hence `migrate`. Row-type features (chrono/uuid/
+# json/macros) come transitively from jobs/meta via Cargo feature unification.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio", "postgres", "migrate",
+] }
+uuid = { version = "1", features = ["v4", "serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
