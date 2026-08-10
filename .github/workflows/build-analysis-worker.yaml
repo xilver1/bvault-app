@@ -17,16 +17,12 @@ permissions:
   contents: read
 
 jobs:
-  deploy-compute:
-    name: Deploy ansible playbooks to compute servers
+  build-analysis-worker:
+    name: Build analysis-worker service and push image to ECR
     runs-on: ubuntu-latest
     steps:
       - name: Chekout repo
         uses: actions/checkout@v6
-      
-      - name: Satisfy AWS SDK dependencies on venv
-        run: |
-          pipx inject ansible-core boto3 botocore
 
       - name: Install Terraform
         uses: hashicorp/setup-terraform@v4

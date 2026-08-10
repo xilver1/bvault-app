@@ -1,4 +1,4 @@
-name: Build exporty builder image and push to ECR
+name: Build export builder image and push to ECR
 on:
   push:
     branches: [main]
@@ -17,16 +17,12 @@ permissions:
   contents: read
 
 jobs:
-  deploy-compute:
-    name: Deploy ansible playbooks to compute servers
+  build-export-builder:
+    name: Build export-builder service and push image to ECR
     runs-on: ubuntu-latest
     steps:
       - name: Chekout repo
         uses: actions/checkout@v6
-      
-      - name: Satisfy AWS SDK dependencies on venv
-        run: |
-          pipx inject ansible-core boto3 botocore
 
       - name: Install Terraform
         uses: hashicorp/setup-terraform@v4
@@ -90,9 +86,9 @@ jobs:
         run: |
         
          # Extract necessary info
-          ECR_REPO=$(terraform output -raw bvault_ecr_repo)
-          IMAGE_TAG="$ECR_REPO/gateway:${{ github.sha }}"
+         ECR_REPO=$(terraform output -raw bvault_ecr_repo)
+         IMAGE_TAG="$ECR_REPO/gateway:${{ github.sha }}"
           
-          # Build and push
+         # Build and push
          docker build -f services/export-builder/Dockerfile -t $IMAGE_TAG .
          docker push $IMAGE_TAG 
