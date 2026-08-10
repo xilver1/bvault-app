@@ -2,7 +2,7 @@
 name = "bvault-meta"
 version.workspace = true
 edition = "2021"
-
+# Some test comment!
 [dependencies]
 # No `migrate` feature — the gateway owns migration execution. Runtime queries,
 # so `cargo check` needs no live DB.
