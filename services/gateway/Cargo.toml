@@ -1,5 +1,5 @@
 [package]
-name = "rekordbox-gateway"
+name = "bvault-gateway"
 version.workspace = true
 edition = "2021"
 
@@ -8,9 +8,9 @@ name = "gateway"
 path = "src/main.rs"
 
 [dependencies]
-rekordbox-jobs = { path = "../../crates/rekordbox-jobs" }
-rekordbox-meta = { path = "../../crates/rekordbox-meta" }
-rekordbox-store = { path = "../../crates/rekordbox-store" }
+bvault-jobs = { path = "../../crates/bvault-jobs" }
+bvault-meta = { path = "../../crates/bvault-meta" }
+bvault-store = { path = "../../crates/bvault-store" }
 
 axum = "0.8"
 # Current-thread runtime (see main.rs). Workspace tokio already has rt/net/macros.

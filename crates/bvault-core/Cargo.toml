@@ -1,0 +1,21 @@
+[package]
+name = "bvault-core"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+binrw.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+xxhash-rust.workspace = true
+rusqlite = { version = "0.31", features = ["bundled-sqlcipher-vendored-openssl"], optional = true }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3.13"
+
+[features]
+# SQLCipher-encrypted Device Library Plus. Off by default so crates that only
+# need the formats/types (the analysis worker) don't drag in rusqlite -> OpenSSL.
+default = []
+device-library = ["dep:rusqlite"]

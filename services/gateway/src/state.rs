@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
-use rekordbox_jobs::Queue;
-use rekordbox_meta::Meta;
-use rekordbox_store::ArtifactStore;
+use bvault_jobs::Queue;
+use bvault_meta::Meta;
+use bvault_store::ArtifactStore;
 
 use crate::config::Config;
 

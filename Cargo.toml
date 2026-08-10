@@ -2,23 +2,23 @@
 resolver = "2"
 
 members = [
-    "crates/rekordbox-core",
-    "crates/rekordbox-analysis",
-    "crates/rekordbox-jobs",
-    "crates/rekordbox-store",
-    "crates/rekordbox-meta",
+    "crates/bvault-core",
+    "crates/bvault-analysis",
+    "crates/bvault-jobs",
+    "crates/bvault-store",
+    "crates/bvault-meta",
     "services/analysis-worker",
     "services/export-builder",
-    "rekordbox-server",
-    "rekordbox-cli",
+    "bvault-server",
+    "bvault-cli",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["rekord-export contributors"]
+authors = ["bvault contributors"]
 license = "MIT"
-repository = "https://github.com/xilver1/rekord-export"
+repository = "https://github.com/xilver1/bvault"
 
 [workspace.dependencies]
 # Binary serialization

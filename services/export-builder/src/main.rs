@@ -1,4 +1,4 @@
-//! rekord-export export-builder: renders a USB export into staging and serves
+//! bvault-export export-builder: renders a USB export into staging and serves
 //! the stateless reconcile transfer. Builds are throwaway; the client (phone)
 //! drives the diff-and-pull loop.
 
@@ -15,8 +15,8 @@ use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
-use rekordbox_meta::Meta;
-use rekordbox_store::{ArtifactStore, RawStore};
+use bvault_meta::Meta;
+use bvault_store::{ArtifactStore, RawStore};
 
 use crate::config::Config;
 use crate::state::AppState;

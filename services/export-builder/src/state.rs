@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use rekordbox_meta::Meta;
-use rekordbox_store::{ArtifactStore, RawStore};
+use bvault_meta::Meta;
+use bvault_store::{ArtifactStore, RawStore};
 
 use crate::config::Config;
 

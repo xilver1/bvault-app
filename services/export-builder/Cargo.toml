@@ -1,5 +1,5 @@
 [package]
-name = "rekordbox-export-builder"
+name = "bvault-export-builder"
 version.workspace = true
 edition = "2021"
 
@@ -8,9 +8,9 @@ name = "export-builder"
 path = "src/main.rs"
 
 [dependencies]
-rekordbox-export = { path = "../../crates/rekordbox-export" } # pulls core+device-library (OpenSSL) — confined to this image
-rekordbox-meta = { path = "../../crates/rekordbox-meta" }
-rekordbox-store = { path = "../../crates/rekordbox-store" }
+bvault-export = { path = "../../crates/bvault-export" } # pulls core+device-library (OpenSSL) — confined to this image
+bvault-meta = { path = "../../crates/bvault-meta" }
+bvault-store = { path = "../../crates/bvault-store" }
 
 axum = "0.8"
 tokio = { workspace = true, features = ["time"] } # + timers for the sweeper

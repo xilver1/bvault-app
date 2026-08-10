@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
-use rekordbox_export::{build_export, ExportInput, Manifest, PlaylistInput, Source};
+use bvault_export::{build_export, ExportInput, Manifest, PlaylistInput, Source};
 
 use crate::error::{ApiResult, ExportError};
 use crate::state::AppState;
@@ -86,12 +86,12 @@ async fn create_export(
     let export_id = Uuid::new_v4();
     let dir = st.config.staging_root.join(export_id.to_string());
     let tree = dir.join("tree");
-    let profile = req.profile_name.unwrap_or_else(|| "rekord-export".to_string());
+    let profile = req.profile_name.unwrap_or_else(|| "bvault".to_string());
 
     // build_export is CPU/FS-blocking (SQLCipher, file writes) → blocking thread.
     let build_state = st.clone();
     let (manifest, raw_sources) = tokio::task::spawn_blocking(
-        move || -> Result<(Manifest, HashMap<String, String>), rekordbox_export::Error> {
+        move || -> Result<(Manifest, HashMap<String, String>), bvault_export::Error> {
             let input = ExportInput {
                 tracks: &tracks,
                 playlists: &playlists,

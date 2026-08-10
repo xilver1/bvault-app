@@ -9,19 +9,19 @@ use tracing::error;
 pub enum ExportError {
     NotFound,
     BadRequest(String),
-    Meta(rekordbox_meta::Error),
-    Build(rekordbox_export::Error),
+    Meta(bvault_meta::Error),
+    Build(bvault_export::Error),
     Internal(String),
 }
 
-impl From<rekordbox_meta::Error> for ExportError {
-    fn from(e: rekordbox_meta::Error) -> Self {
+impl From<bvault_meta::Error> for ExportError {
+    fn from(e: bvault_meta::Error) -> Self {
         Self::Meta(e)
     }
 }
 
-impl From<rekordbox_export::Error> for ExportError {
-    fn from(e: rekordbox_export::Error) -> Self {
+impl From<bvault_export::Error> for ExportError {
+    fn from(e: bvault_export::Error) -> Self {
         Self::Build(e)
     }
 }

@@ -7,8 +7,8 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use rekordbox_jobs::{AnalysisJob, JobKind};
-use rekordbox_meta::{Playlist, Track};
+use bvault_jobs::{AnalysisJob, JobKind};
+use bvault_meta::{Playlist, Track};
 
 use crate::error::{ApiResult, GatewayError};
 use crate::state::AppState;

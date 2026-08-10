@@ -1,4 +1,4 @@
-//! rekord-export gateway: the HTTP API that fronts the pipeline. It owns the
+//! bvault-export gateway: the HTTP API that fronts the pipeline. It owns the
 //! database (runs migrations), resolves playlists into analysis work, submits
 //! jobs, and reports batch progress by polling. Thin client, fat server.
 
@@ -14,9 +14,9 @@ use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
 use tracing::info;
 
-use rekordbox_jobs::Queue;
-use rekordbox_meta::Meta;
-use rekordbox_store::ArtifactStore;
+use bvault_jobs::Queue;
+use bvault_meta::Meta;
+use bvault_store::ArtifactStore;
 
 use crate::config::Config;
 use crate::state::AppState;

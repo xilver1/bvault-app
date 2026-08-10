@@ -10,18 +10,18 @@ use tracing::error;
 pub enum GatewayError {
     NotFound,
     BadRequest(String),
-    Meta(rekordbox_meta::Error),
-    Jobs(rekordbox_jobs::Error),
+    Meta(bvault_meta::Error),
+    Jobs(bvault_jobs::Error),
 }
 
-impl From<rekordbox_meta::Error> for GatewayError {
-    fn from(e: rekordbox_meta::Error) -> Self {
+impl From<bvault_meta::Error> for GatewayError {
+    fn from(e: bvault_meta::Error) -> Self {
         Self::Meta(e)
     }
 }
 
-impl From<rekordbox_jobs::Error> for GatewayError {
-    fn from(e: rekordbox_jobs::Error) -> Self {
+impl From<bvault_jobs::Error> for GatewayError {
+    fn from(e: bvault_jobs::Error) -> Self {
         Self::Jobs(e)
     }
 }

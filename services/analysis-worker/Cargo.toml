@@ -1,5 +1,5 @@
 [package]
-name = "rekordbox-analysis-worker"
+name = "bvault-analysis-worker"
 version.workspace = true
 edition = "2021"
 
@@ -8,10 +8,10 @@ name = "analysis-worker"
 path = "src/main.rs"
 
 [dependencies]
-rekordbox-jobs = { path = "../../crates/rekordbox-jobs" }
-rekordbox-store = { path = "../../crates/rekordbox-store" }
-rekordbox-analysis = { path = "../../crates/rekordbox-analysis" }
-# Note: no direct rekordbox-core dep — TrackAnalysis comes back from
+bvault-jobs = { path = "../../crates/bvault-jobs" }
+bvault-store = { path = "../../crates/bvault-store" }
+bvault-analysis = { path = "../../crates/bvault-analysis" }
+# Note: no direct bvault-core dep — TrackAnalysis comes back from
 # analyze_source and its Serialize impl is used transitively; nothing here names
 # a core type. And no SQLCipher/OpenSSL, since -analysis pulls -core with the
 # device-library feature OFF. This worker image stays tiny.

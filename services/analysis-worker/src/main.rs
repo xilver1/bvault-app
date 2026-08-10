@@ -1,4 +1,4 @@
-//! rekord-export analysis worker: the queue consumer. It claims analysis jobs,
+//! bvault-export analysis worker: the queue consumer. It claims analysis jobs,
 //! reads raw audio from the music store, runs the pure analysis engine, and
 //! writes the result to the content-addressable artifact store. Stateless and
 //! horizontally scalable — run as many replicas as the cluster allows.
@@ -11,9 +11,9 @@ use std::sync::Arc;
 use anyhow::Context;
 use tracing::info;
 
-use rekordbox_analysis::AnalyzeOptions;
-use rekordbox_jobs::Queue;
-use rekordbox_store::{ArtifactStore, RawStore};
+use bvault_analysis::AnalyzeOptions;
+use bvault_jobs::Queue;
+use bvault_store::{ArtifactStore, RawStore};
 
 use crate::config::Config;
 use crate::worker::Worker;

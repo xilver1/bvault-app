@@ -16,9 +16,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tracing::{error, info};
 
-use rekordbox_analysis::AnalyzeOptions;
-use rekordbox_jobs::{AnalysisJob, Job, JobKind, Queue};
-use rekordbox_store::{ArtifactStore, RawStore};
+use bvault_analysis::AnalyzeOptions;
+use bvault_jobs::{AnalysisJob, Job, JobKind, Queue};
+use bvault_store::{ArtifactStore, RawStore};
 
 /// Shared, read-only handles for every job.
 pub struct Worker {
@@ -98,7 +98,7 @@ impl Worker {
             .extension()
             .and_then(|e| e.to_str());
 
-        let analysis = rekordbox_analysis::analyze_source(
+        let analysis = bvault_analysis::analyze_source(
             Box::new(file),
             hint_ext,
             file_size,
