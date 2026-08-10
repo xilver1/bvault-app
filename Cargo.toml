@@ -8,6 +8,7 @@ members = [
     "crates/rekordbox-store",
     "crates/rekordbox-meta",
     "services/analysis-worker",
+    "services/export-builder",
     "rekordbox-server",
     "rekordbox-cli",
 ]
