@@ -1,5 +1,5 @@
 /target/
 /.claude/
-/out
-/cache
+/out/
+/cache/
 Cargo.lock
