@@ -5,6 +5,8 @@ on:
     paths:
       - 'services/export-builder/**'
       - 'crates/bvault-export/**'
+      - 'crates/bvault-meta/**'
+      - 'crates/bvault-store/**'
 
 defaults:
   run:
