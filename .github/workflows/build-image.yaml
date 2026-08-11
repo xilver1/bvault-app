@@ -38,7 +38,7 @@ jobs:
           context: . # workspace root
           file: services/${{ inputs.service }}/Dockerfile
           push: true
-          tags: ${{ steps.ecr.outputs.registry }}/bvault_app/${{ inputs.service }}:${{ github.sha }}
+          tags: ${{ steps.ecr.outputs.registry }}/bvault_app/:${{ github.sha }}
           # Persist cargo-chef's dependency layers across runs (per-service scope
           # so the export-builder's OpenSSL layer isn't recompiled every time).
           cache-from: type=gha,scope=${{ inputs.service }}
