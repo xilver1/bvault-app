@@ -1,0 +1,45 @@
+name: build-image
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: "Service dir + ECR repo suffix (gateway | analysis-worker | export-builder)"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ inputs.service }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::854469103070:role/bvault-app-ci
+          aws-region: us-east-1
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: . # workspace root
+          file: services/${{ inputs.service }}/Dockerfile
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/bvault_app/${{ inputs.service }}:${{ github.sha }}
+          # Persist cargo-chef's dependency layers across runs (per-service scope
+          # so the export-builder's OpenSSL layer isn't recompiled every time).
+          cache-from: type=gha,scope=${{ inputs.service }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.service }}
