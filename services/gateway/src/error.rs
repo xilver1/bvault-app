@@ -14,7 +14,7 @@ pub enum GatewayError {
     Jobs(bvault_jobs::Error),
 }
 
-// Adding an unnecessary change part 7
+// Adding an unnecessary change part 8
 impl From<bvault_meta::Error> for GatewayError {
     fn from(e: bvault_meta::Error) -> Self {
         Self::Meta(e)
