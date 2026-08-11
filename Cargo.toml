@@ -7,8 +7,10 @@ members = [
     "crates/bvault-jobs",
     "crates/bvault-store",
     "crates/bvault-meta",
+    "crates/bvault-export",
     "services/analysis-worker",
     "services/export-builder",
+    "services/gateway",
     "bvault-server",
     "bvault-cli",
 ]
