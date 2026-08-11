@@ -17,6 +17,6 @@ permissions:
 
 jobs:
   build:
-    uses: ./.github/workflows/build-image.yml
+    uses: ./.github/workflows/build-image.yaml
     with:
       service: gateway
