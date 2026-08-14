@@ -1,0 +1,19 @@
+name: Build yt-dlp-ingest image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/yt-dlp-ingest/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-image.yaml
+    with:
+      service: analysis-worker
