@@ -10,6 +10,11 @@ use tracing::error;
 pub enum GatewayError {
     NotFound,
     BadRequest(String),
+    /// Missing/invalid credentials or session — always a generic 401 to the
+    /// client (no distinction between "no such user" and "wrong password").
+    Unauthorized,
+    /// An internal failure with a message logged but not returned to the client.
+    Internal(String),
     Meta(bvault_meta::Error),
     Jobs(bvault_jobs::Error),
 }
@@ -31,6 +36,17 @@ impl IntoResponse for GatewayError {
         let (status, message) = match self {
             GatewayError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             GatewayError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            GatewayError::Unauthorized => {
+                (StatusCode::UNAUTHORIZED, "unauthorized".to_string())
+            }
+            GatewayError::Internal(detail) => {
+                error!(detail, "internal error");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+            }
+            // A taken username is an expected, user-caused conflict, not a 500.
+            GatewayError::Meta(bvault_meta::Error::UsernameTaken) => {
+                (StatusCode::CONFLICT, "username already taken".to_string())
+            }
             // Don't leak internals to the client; log them instead.
             GatewayError::Meta(e) => {
                 error!(error = %e, "metadata error");

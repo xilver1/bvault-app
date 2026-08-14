@@ -11,8 +11,10 @@ path = "src/main.rs"
 bvault-jobs = { path = "../../crates/bvault-jobs" }
 bvault-meta = { path = "../../crates/bvault-meta" }
 bvault-store = { path = "../../crates/bvault-store" }
+bvault-auth = { path = "../../crates/bvault-auth" }
+bvault-hash = { path = "../../crates/bvault-hash" }
 
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 # Current-thread runtime (see main.rs). Workspace tokio already has rt/net/macros.
 tokio = { workspace = true }
 # The gateway owns migrations, hence `migrate`. Row-type features (chrono/uuid/
@@ -21,8 +23,12 @@ sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio", "postgres", "migrate",
 ] }
 uuid = { version = "1", features = ["v4", "serde"] }
+# Session expiry math (Utc::now() + ttl) and serializing expires_at in responses.
+chrono = { version = "0.4", features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
+reqwest = { version = "0.12", features = ["json"] }
+bytes = "1.5"

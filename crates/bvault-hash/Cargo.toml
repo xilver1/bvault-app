@@ -1,0 +1,9 @@
+[package]
+name = "bvault-hash"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+# The one dependency: xxh3, same as core's cache. No std-only reimplementation
+# so the algorithm can never fork from what core already validated.
+xxhash-rust = { workspace = true }

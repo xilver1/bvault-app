@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use bvault_jobs::Queue;
 use bvault_meta::Meta;
-use bvault_store::ArtifactStore;
+use bvault_store::{ArtifactStore, RawStore};
 
 use crate::config::Config;
 
@@ -18,5 +18,7 @@ pub struct AppState {
     /// The content-addressable analysis store — the source of truth for
     /// "analyzed" (presence) and thus for batch progress.
     pub artifacts: ArtifactStore,
+    /// The raw audio store.
+    pub raw: RawStore,
     pub config: Arc<Config>,
 }

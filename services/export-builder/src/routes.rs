@@ -67,7 +67,7 @@ async fn create_export(
 
     // Union of member hashes (+ locations), filtered to what's actually analyzed
     // — export operates on analyzed tracks only; a stray unanalyzed one is skipped.
-    let union = st.meta.resolve_hashes(&req.playlist_ids).await?;
+    let union = st.meta.resolve_hashes(None, &req.playlist_ids).await?;
     let tracks: Vec<(String, String)> =
         union.into_iter().filter(|(h, _)| st.artifacts.exists(h)).collect();
     if tracks.is_empty() {
@@ -77,8 +77,8 @@ async fn create_export(
     // Playlist name + membership for the PDB/device-library playlist entries.
     let mut playlists = Vec::new();
     for id in &req.playlist_ids {
-        if let Some(pl) = st.meta.get_playlist(*id).await? {
-            let hashes = st.meta.playlist_hashes(*id).await?;
+        if let Some(pl) = st.meta.get_playlist(None, *id).await? {
+            let hashes = st.meta.playlist_hashes(None, *id).await?;
             playlists.push(PlaylistInput { name: pl.name, hashes });
         }
     }

@@ -38,6 +38,26 @@ impl RawStore {
     pub fn open(&self, location: &str) -> Result<File> {
         Ok(File::open(self.resolve(location)?)?)
     }
+
+    /// Write raw audio bytes into the store under a content-addressed location.
+    /// Returns the store-relative location path.
+    pub fn write(&self, hash: &str, ext: &str, data: &[u8]) -> Result<String> {
+        let prefix = if hash.len() >= 2 { &hash[..2] } else { "00" };
+        let clean_ext = ext.trim_start_matches('.');
+        let ext_str = if clean_ext.is_empty() { "mp3" } else { clean_ext };
+        let rel_path = format!("{}/{}.{}", prefix, hash, ext_str);
+        let target_path = self.root.join(&rel_path);
+
+        if let Some(parent) = target_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let tmp_path = target_path.with_extension("tmp");
+        std::fs::write(&tmp_path, data)?;
+        std::fs::rename(tmp_path, &target_path)?;
+
+        Ok(rel_path)
+    }
 }
 
 #[cfg(test)]

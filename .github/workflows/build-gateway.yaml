@@ -8,6 +8,7 @@ on:
       - "crates/bvault-jobs/**"
       - "crates/bvault-meta/**"
       - "crates/bvault-store/**"
+      - "crates/bvault-auth/**"
       - "Cargo.toml"
       - "Cargo.lock"
 

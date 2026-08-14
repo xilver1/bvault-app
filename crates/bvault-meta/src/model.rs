@@ -17,6 +17,17 @@ pub struct Track {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub added_at: DateTime<Utc>,
+    pub user_id: Option<Uuid>,
+}
+
+/// A registered user, minus anything secret. The `password_hash` never leaves
+/// the query layer — credential checks happen inside [`crate::Meta`], and this
+/// type is what the gateway is allowed to serialize out.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct User {
+    pub id: Uuid,
+    pub username: String,
+    pub created_at: DateTime<Utc>,
 }
 
 /// A playlist header. Membership (the hash set) is fetched separately.
@@ -27,6 +38,7 @@ pub struct Playlist {
     pub description: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub user_id: Option<Uuid>,
 }
 
 /// A submission batch — the durable record of an "analyze these playlists"
@@ -39,4 +51,5 @@ pub struct Batch {
     pub name: Option<String>,
     pub hashes: Vec<String>,
     pub created_at: DateTime<Utc>,
+    pub user_id: Option<Uuid>,
 }

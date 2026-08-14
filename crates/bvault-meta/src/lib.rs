@@ -11,7 +11,7 @@
 mod model;
 mod queries;
 
-pub use model::{Batch, Playlist, Track};
+pub use model::{Batch, Playlist, Track, User};
 pub use queries::Meta;
 
 use thiserror::Error;
@@ -20,6 +20,12 @@ use thiserror::Error;
 pub enum Error {
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
+
+    /// A registration collided with an existing (case-insensitive) username.
+    /// Surfaced as its own variant so the gateway can answer 409 instead of a
+    /// generic 500 on this expected, user-caused condition.
+    #[error("username already taken")]
+    UsernameTaken,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

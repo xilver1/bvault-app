@@ -3,6 +3,8 @@ resolver = "2"
 
 members = [
     "crates/bvault-core",
+    "crates/bvault-hash",
+    "crates/bvault-auth",
     "crates/bvault-analysis",
     "crates/bvault-jobs",
     "crates/bvault-store",

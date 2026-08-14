@@ -16,7 +16,7 @@ use tracing::info;
 
 use bvault_jobs::Queue;
 use bvault_meta::Meta;
-use bvault_store::ArtifactStore;
+use bvault_store::{ArtifactStore, RawStore};
 
 use crate::config::Config;
 use crate::state::AppState;
@@ -47,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
         meta: Meta::new(pool.clone()),
         queue: Queue::from_pool(pool.clone()),
         artifacts: ArtifactStore::new(&config.artifact_store_root),
+        raw: RawStore::new(&config.raw_store_root),
         config: Arc::new(config),
     };
 

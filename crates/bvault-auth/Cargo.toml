@@ -1,0 +1,15 @@
+[package]
+name = "bvault-auth"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+# Passwords: Argon2id (memory-hard, slow-by-design).
+argon2 = "0.5"
+# Explicit CSPRNG dep so OsRng is always available (salt generation + tokens),
+# independent of how argon2/password-hash features unify in the workspace.
+rand_core = { version = "0.6", features = ["getrandom"] }
+# Session tokens: fast SHA-256 fingerprint at rest (tokens are already 256-bit
+# random, so memory-hardness buys nothing). Encoding is hand-rolled — no hex dep.
+sha2 = "0.10"
+thiserror = { workspace = true }

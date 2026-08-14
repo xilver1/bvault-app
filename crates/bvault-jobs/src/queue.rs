@@ -18,7 +18,7 @@ use serde::Serialize;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
 use crate::model::{Job, JobKind, JobStatus};
-use crate::{Error, Result};
+use crate::Result;
 
 /// Handle to the queue. Cheap to clone — wraps a connection pool.
 #[derive(Clone)]

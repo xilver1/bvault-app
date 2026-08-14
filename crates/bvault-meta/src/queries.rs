@@ -6,11 +6,12 @@
 //! out already-analyzed tracks — that filter is `ArtifactStore::exists`, applied
 //! by the gateway, because analyzed-ness is a fact about the store, not the DB.
 
+use chrono::{DateTime, Utc};
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
 use crate::model::{Batch, Playlist, Track};
-use crate::Result;
+use crate::{Error, Result};
 
 /// Handle to the metadata database. Cheap to clone — wraps the pool.
 #[derive(Clone)]
@@ -23,10 +24,70 @@ impl Meta {
         Self { pool }
     }
 
-    /// Register or update an ingested track's raw-file lookup entry. Ingestion
-    /// writes this; the gateway reads it.
+    // ---- auth: users + sessions --------------------------------------------
+
+    pub async fn create_user(&self, username: &str, password_hash: &str) -> Result<Uuid> {
+        match sqlx::query_as::<_, (Uuid,)>(
+            "insert into users (username, password_hash) values ($1, $2) returning id",
+        )
+        .bind(username)
+        .bind(password_hash)
+        .fetch_one(&self.pool)
+        .await
+        {
+            Ok((id,)) => Ok(id),
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Err(Error::UsernameTaken),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub async fn find_credentials(&self, username: &str) -> Result<Option<(Uuid, String)>> {
+        Ok(sqlx::query_as::<_, (Uuid, String)>(
+            "select id, password_hash from users where lower(username) = lower($1)",
+        )
+        .bind(username)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_session(
+        &self,
+        token_hash: &str,
+        user_id: Uuid,
+        expires_at: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query("insert into sessions (token_hash, user_id, expires_at) values ($1, $2, $3)")
+            .bind(token_hash)
+            .bind(user_id)
+            .bind(expires_at)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn lookup_session(&self, token_hash: &str) -> Result<Option<Uuid>> {
+        Ok(sqlx::query_as::<_, (Uuid,)>(
+            "select user_id from sessions where token_hash = $1 and expires_at > now()",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|(id,)| id))
+    }
+
+    pub async fn delete_session(&self, token_hash: &str) -> Result<()> {
+        sqlx::query("delete from sessions where token_hash = $1")
+            .bind(token_hash)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // ---- metadata operations ------------------------------------------------
+
     pub async fn upsert_track(
         &self,
+        user_id: Option<Uuid>,
         hash: &str,
         raw_location: &str,
         title: Option<&str>,
@@ -34,50 +95,53 @@ impl Meta {
     ) -> Result<()> {
         sqlx::query(
             r#"
-            insert into tracks (hash, raw_location, title, artist)
-            values ($1, $2, $3, $4)
+            insert into tracks (hash, raw_location, title, artist, user_id)
+            values ($1, $2, $3, $4, $5)
             on conflict (hash) do update
                 set raw_location = excluded.raw_location,
                     title = excluded.title,
-                    artist = excluded.artist
+                    artist = excluded.artist,
+                    user_id = coalesce(tracks.user_id, excluded.user_id)
             "#,
         )
         .bind(hash)
         .bind(raw_location)
         .bind(title)
         .bind(artist)
+        .bind(user_id)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    /// List the library (most-recently-added first).
-    pub async fn list_tracks(&self, limit: i64, offset: i64) -> Result<Vec<Track>> {
+    pub async fn list_tracks(&self, user_id: Option<Uuid>, limit: i64, offset: i64) -> Result<Vec<Track>> {
         Ok(sqlx::query_as::<_, Track>(
             r#"
-            select hash, raw_location, title, artist, added_at
+            select hash, raw_location, title, artist, added_at, user_id
             from tracks
+            where ($1::uuid is null or user_id = $1)
             order by added_at desc
-            limit $1 offset $2
+            limit $2 offset $3
             "#,
         )
+        .bind(user_id)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
         .await?)
     }
 
-    /// Create a playlist and its membership in one transaction. `hashes` is the
-    /// unordered member set; duplicates collapse.
     pub async fn create_playlist(
         &self,
+        user_id: Option<Uuid>,
         name: &str,
         description: Option<&str>,
         hashes: &[String],
     ) -> Result<Uuid> {
         let mut tx = self.pool.begin().await?;
         let (id,): (Uuid,) =
-            sqlx::query_as("insert into playlists (name, description) values ($1, $2) returning id")
+            sqlx::query_as("insert into playlists (user_id, name, description) values ($1, $2, $3) returning id")
+                .bind(user_id)
                 .bind(name)
                 .bind(description)
                 .fetch_one(&mut *tx)
@@ -98,58 +162,61 @@ impl Meta {
         Ok(id)
     }
 
-    pub async fn list_playlists(&self) -> Result<Vec<Playlist>> {
+    pub async fn list_playlists(&self, user_id: Option<Uuid>) -> Result<Vec<Playlist>> {
         Ok(sqlx::query_as::<_, Playlist>(
-            "select id, name, description, created_at, updated_at
-             from playlists order by created_at desc",
+            "select id, name, description, created_at, updated_at, user_id
+             from playlists where ($1::uuid is null or user_id = $1) order by created_at desc",
         )
+        .bind(user_id)
         .fetch_all(&self.pool)
         .await?)
     }
 
-    pub async fn get_playlist(&self, id: Uuid) -> Result<Option<Playlist>> {
+    pub async fn get_playlist(&self, user_id: Option<Uuid>, id: Uuid) -> Result<Option<Playlist>> {
         Ok(sqlx::query_as::<_, Playlist>(
-            "select id, name, description, created_at, updated_at
-             from playlists where id = $1",
+            "select id, name, description, created_at, updated_at, user_id
+             from playlists where id = $1 and ($2::uuid is null or user_id = $2)",
         )
         .bind(id)
+        .bind(user_id)
         .fetch_optional(&self.pool)
         .await?)
     }
 
-    /// The member hashes of one playlist.
-    pub async fn playlist_hashes(&self, id: Uuid) -> Result<Vec<String>> {
+    pub async fn playlist_hashes(&self, user_id: Option<Uuid>, id: Uuid) -> Result<Vec<String>> {
         let rows: Vec<(String,)> =
-            sqlx::query_as("select hash from playlist_tracks where playlist_id = $1")
-                .bind(id)
-                .fetch_all(&self.pool)
-                .await?;
+            sqlx::query_as(
+                "select pt.hash from playlist_tracks pt
+                 join playlists p on p.id = pt.playlist_id
+                 where pt.playlist_id = $1 and ($2::uuid is null or p.user_id = $2)",
+            )
+            .bind(id)
+            .bind(user_id)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().map(|(h,)| h).collect())
     }
 
-    /// Resolve a set of playlists to their **deduplicated** member hashes, each
-    /// paired with its raw-file location — the input the gateway needs to build
-    /// analysis jobs (after filtering already-analyzed hashes via the store).
-    pub async fn resolve_hashes(&self, playlist_ids: &[Uuid]) -> Result<Vec<(String, String)>> {
+    pub async fn resolve_hashes(&self, user_id: Option<Uuid>, playlist_ids: &[Uuid]) -> Result<Vec<(String, String)>> {
         Ok(sqlx::query_as::<_, (String, String)>(
             r#"
             select distinct t.hash, t.raw_location
             from playlist_tracks pt
+            join playlists p on p.id = pt.playlist_id
             join tracks t on t.hash = pt.hash
-            where pt.playlist_id = any($1)
+            where pt.playlist_id = any($1) and ($2::uuid is null or p.user_id = $2)
             "#,
         )
         .bind(playlist_ids)
+        .bind(user_id)
         .fetch_all(&self.pool)
         .await?)
     }
 
-    /// Record a submission batch: a snapshot of its full member hash set (plus an
-    /// optional name for the completion notification). Returns the batch id the
-    /// client polls. Progress is computed on read, never stored here.
-    pub async fn create_batch(&self, name: Option<&str>, hashes: &[String]) -> Result<Uuid> {
+    pub async fn create_batch(&self, user_id: Option<Uuid>, name: Option<&str>, hashes: &[String]) -> Result<Uuid> {
         let (id,): (Uuid,) =
-            sqlx::query_as("insert into batches (name, hashes) values ($1, $2) returning id")
+            sqlx::query_as("insert into batches (user_id, name, hashes) values ($1, $2, $3) returning id")
+                .bind(user_id)
                 .bind(name)
                 .bind(hashes)
                 .fetch_one(&self.pool)
@@ -157,13 +224,12 @@ impl Meta {
         Ok(id)
     }
 
-    /// Fetch a batch (name + hash-set snapshot) for the gateway to compute
-    /// progress against the artifact store and the dead-letter.
-    pub async fn get_batch(&self, id: Uuid) -> Result<Option<Batch>> {
+    pub async fn get_batch(&self, user_id: Option<Uuid>, id: Uuid) -> Result<Option<Batch>> {
         Ok(sqlx::query_as::<_, Batch>(
-            "select id, name, hashes, created_at from batches where id = $1",
+            "select id, name, hashes, created_at, user_id from batches where id = $1 and ($2::uuid is null or user_id = $2)",
         )
         .bind(id)
+        .bind(user_id)
         .fetch_optional(&self.pool)
         .await?)
     }
