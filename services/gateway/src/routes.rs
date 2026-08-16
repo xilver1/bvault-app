@@ -49,9 +49,9 @@ impl FromRequestParts<AppState> for AuthUser {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
         if let Some(internal_key) = &state.config.internal_api_key {
-            if let Some(req_key) = parts.headers.get("X-Internal-Key").and_then(|v| v.to_str().ok()) {
+            if let Some(req_key) = parts.headers.get("x-internal-key").and_then(|v| v.to_str().ok()) {
                 if req_key == internal_key {
-                    if let Some(user_id_str) = parts.headers.get("X-User-Id").and_then(|v| v.to_str().ok()) {
+                    if let Some(user_id_str) = parts.headers.get("x-user-id").and_then(|v| v.to_str().ok()) {
                         if let Ok(id) = Uuid::parse_str(user_id_str) {
                             return Ok(AuthUser { id });
                         }
