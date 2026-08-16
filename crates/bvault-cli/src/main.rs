@@ -6,6 +6,7 @@ mod client;
 mod tui;
 mod export;
 mod login;
+mod register;
 mod ingest;
 mod library;
 mod playlist;
@@ -22,6 +23,8 @@ struct Cli {
 enum Commands {
     /// Login to BeatVault
     Login,
+    /// Register a new account
+    Register,
     /// Ingest a track (YouTube)
     Ingest {
         url: String,
@@ -55,6 +58,9 @@ async fn main() -> Result<()> {
     match &cli.command {
         Commands::Login => {
             login::run_login_flow().await?;
+        }
+        Commands::Register => {
+            register::run_register_flow().await?;
         }
         Commands::Ingest { url, youtube } => {
             ingest::run_ingest_flow(url, *youtube).await?;
