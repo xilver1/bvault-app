@@ -8,14 +8,30 @@ from pydantic import BaseModel
 import httpx
 import yt_dlp
 from yt_dlp.networking.impersonate import ImpersonateTarget
+from anyio import to_thread
 
 app = FastAPI(title="BeatVault yt-dlp Ingestion Service")
+
+@app.on_event("startup")
+async def startup_event():
+    # Limit concurrent yt-dlp/ffmpeg jobs to 4 per pod to prevent CPU starvation and OOM kills.
+    limiter = to_thread.current_default_thread_limiter()
+    limiter.total_tokens = 4
+
+    # Pre-initialize yt-dlp to avoid thread race conditions during plugin registration.
+    # Without this, multiple threads calling yt_dlp.YoutubeDL() concurrently will crash
+    # with "AssertionError: PoTokenProvider already registered".
+    try:
+        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+            pass
+    except Exception as e:
+        print(f"[startup] yt-dlp pre-init failed: {e}")
 
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://gateway.bvault-prod.svc.cluster.local:8080")
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "")
 POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://127.0.0.1:4416")
-MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
-BASE_BACKOFF_SECONDS = float(os.getenv("BASE_BACKOFF_SECONDS", "2.0"))
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "10"))
+BASE_BACKOFF_SECONDS = float(os.getenv("BASE_BACKOFF_SECONDS", "10.0"))
 
 class ExtractRequest(BaseModel):
     url: str
@@ -98,22 +114,28 @@ def process_yt_dlp(url: str, user_id: str, job_id: int, target_gateway_url: str)
             return  # Success!
 
         except Exception as e:
+            err_str = str(e)
+            if "Video unavailable" in err_str or "Private video" in err_str:
+                print(f"[yt-dlp-ingest] job {job_id} permanently failed (video unavailable): {e}", flush=True)
+                _report_job(job_id, user_id, target_gateway_url, ok=False, error=err_str)
+                return
+
             if attempt < MAX_RETRIES:
                 sleep_time = random.uniform(0, BASE_BACKOFF_SECONDS * (2 ** attempt))
                 print(f"[yt-dlp-ingest] job {job_id} failed on attempt {attempt + 1}/{MAX_RETRIES + 1}: {e}. Retrying in {sleep_time:.2f}s...", flush=True)
                 time.sleep(sleep_time)
             else:
                 print(f"[yt-dlp-ingest] job {job_id} permanently failed after {MAX_RETRIES + 1} attempts: {e}", flush=True)
-                _report_job(job_id, user_id, target_gateway_url, ok=False, error=str(e))
+                _report_job(job_id, user_id, target_gateway_url, ok=False, error=err_str)
 
 
 @app.get("/health")
-def health():
+async def health():
     return {"status": "ok"}
 
 
 @app.post("/extract")
-def extract_audio(req: ExtractRequest, background_tasks: BackgroundTasks):
+async def extract_audio(req: ExtractRequest, background_tasks: BackgroundTasks):
     target_url = req.gateway_url or GATEWAY_URL
     background_tasks.add_task(process_yt_dlp, req.url, req.user_id, req.job_id, target_url)
     return {"status": "accepted", "job_id": req.job_id}
