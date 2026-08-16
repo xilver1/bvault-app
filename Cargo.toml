@@ -10,11 +10,13 @@ members = [
     "crates/bvault-store",
     "crates/bvault-meta",
     "crates/bvault-export",
+    "crates/bvault-transfer",
+    "crates/bvault-cli",
     "services/analysis-worker",
     "services/export-builder",
     "services/gateway",
 ]
-
+# Example
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
@@ -57,6 +59,16 @@ walkdir = "2.5"
 
 # Hashing for cache keys
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+# CLI and HTTP
+reqwest = { version = "0.12", features = ["json", "stream"] }
+dialoguer = "0.11"
+indicatif = "0.17"
+sysinfo = "0.30"
+dirs = "5.0"
+comfy-table = "7.1"
+
+
 
 [profile.release]
 opt-level = 3
