@@ -28,6 +28,8 @@ def process_yt_dlp(url: str, user_id: str, target_gateway_url: str):
         }],
         'quiet': True,
         'no_warnings': True,
+        'impersonate': 'chrome',
+        'extractor_args': {'youtube': ['player_client=web']},
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
