@@ -4,6 +4,7 @@ import time
 import random
 from typing import Optional
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Query
+from pydantic import BaseModel
 import httpx
 import yt_dlp
 from yt_dlp.networking.impersonate import ImpersonateTarget
