@@ -17,6 +17,8 @@ class ExtractRequest(BaseModel):
     user_id: str
     gateway_url: Optional[str] = None
 
+from yt_dlp.networking.impersonate import ImpersonateTarget
+
 def process_yt_dlp(url: str, user_id: str, target_gateway_url: str):
     ydl_opts = {
         'format': 'bestaudio/best',
@@ -28,7 +30,7 @@ def process_yt_dlp(url: str, user_id: str, target_gateway_url: str):
         }],
         'quiet': True,
         'no_warnings': True,
-        'impersonate': 'chrome',
+        'impersonate': ImpersonateTarget.from_str('chrome'),
         'extractor_args': {'youtube': ['player_client=web']},
     }
 
