@@ -82,7 +82,7 @@ def process_yt_dlp(url: str, user_id: str, job_id: int, target_gateway_url: str)
                 print(f"[yt-dlp-ingest] Uploading '{title}' to gateway...", flush=True)
                 res = httpx.post(upload_url, files=files, headers=headers, timeout=60.0)
                 if res.status_code >= 400:
-+                    print(f"[yt-dlp-ingest] upload rejected {res.status_code}: {res.text}", flush=True)
+                    print(f"[yt-dlp-ingest] upload rejected {res.status_code}: {res.text}", flush=True)
                 res.raise_for_status()
                 print(f"[yt-dlp-ingest] Ingested '{title}' status: {res.status_code}", flush=True)
             finally:
