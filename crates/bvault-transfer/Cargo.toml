@@ -1,0 +1,16 @@
+[package]
+name = "bvault-transfer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bvault-hash = { path = "../bvault-hash" }
+bvault-export = { path = "../bvault-export" }
+reqwest.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+futures-util = "0.3"
+
