@@ -24,3 +24,4 @@ oauth2.workspace = true
 tiny_http.workspace = true
 webbrowser.workspace = true
 strsim.workspace = true
+regex = "1.13.1"

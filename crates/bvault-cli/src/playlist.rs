@@ -65,7 +65,31 @@ async fn fetch_playlist_by_name(client: &Client, base_url: &str, token: &str, na
         .json()
         .await?;
         
-    Ok(playlists.into_iter().find(|p| p.name == name))
+    let matches: Vec<Playlist> = playlists.into_iter().filter(|p| p.name == name).collect();
+    
+    if matches.is_empty() {
+        return Ok(None);
+    }
+    
+    if matches.len() == 1 {
+        return Ok(Some(matches.into_iter().next().unwrap()));
+    }
+    
+    // Multiple matches, prompt user to select
+    println!("? Multiple playlists found with the name '{}':", name);
+    let mut items = vec![];
+    for p in &matches {
+        let desc = p.description.as_deref().unwrap_or("No description");
+        items.push(format!("Created: {} | Description: {}", p.created_at.format("%Y-%m-%d %H:%M"), desc));
+    }
+    
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select which playlist you meant:")
+        .default(0)
+        .items(&items)
+        .interact()?;
+        
+    Ok(Some(matches.into_iter().nth(selection).unwrap()))
 }
 
 pub async fn run_playlist_list_flow() -> Result<()> {

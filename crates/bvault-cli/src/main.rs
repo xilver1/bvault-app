@@ -27,13 +27,18 @@ enum Commands {
     Register,
     /// Ingest a track (YouTube)
     Ingest {
-        url: String,
-        #[arg(long, conflicts_with_all = ["local", "gdrive"])]
+        #[arg(required_unless_present = "youtube_sso")]
+        query: Option<String>,
+        #[arg(long, conflicts_with_all = ["local", "gdrive", "youtube_sso", "youtube_playlist"])]
         youtube: bool,
-        #[arg(long, conflicts_with_all = ["youtube", "gdrive"])]
+        #[arg(long, conflicts_with_all = ["youtube", "gdrive", "youtube_sso", "youtube_playlist"])]
         local: bool,
-        #[arg(long, conflicts_with_all = ["youtube", "local"])]
+        #[arg(long, conflicts_with_all = ["youtube", "local", "youtube_sso", "youtube_playlist"])]
         gdrive: bool,
+        #[arg(long, conflicts_with_all = ["youtube", "local", "gdrive", "youtube_playlist"])]
+        youtube_sso: bool,
+        #[arg(long, conflicts_with_all = ["youtube", "local", "gdrive", "youtube_sso"])]
+        youtube_playlist: bool,
     },
     /// List library
     Library,
@@ -81,8 +86,8 @@ async fn main() -> Result<()> {
         Commands::Register => {
             register::run_register_flow().await?;
         }
-        Commands::Ingest { url, youtube, local, gdrive } => {
-            ingest::run_ingest_flow(url, *youtube, *local, *gdrive).await?;
+        Commands::Ingest { query, youtube, local, gdrive, youtube_sso, youtube_playlist } => {
+            ingest::run_ingest_flow(query.as_deref(), *youtube, *local, *gdrive, *youtube_sso, *youtube_playlist).await?;
         }
         Commands::Library => {
             library::run_library_flow().await?;
