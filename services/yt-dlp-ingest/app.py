@@ -6,6 +6,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Query
 from pydantic import BaseModel
 import httpx
 import yt_dlp
+from yt_dlp.networking.impersonate import ImpersonateTarget
 
 app = FastAPI(title="BeatVault yt-dlp Ingestion Service")
 
@@ -28,7 +29,7 @@ def process_yt_dlp(url: str, user_id: str, target_gateway_url: str):
         }],
         'quiet': True,
         'no_warnings': True,
-        'impersonate': 'chrome',
+        'impersonate': ImpersonateTarget.from_str('chrome'),
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
