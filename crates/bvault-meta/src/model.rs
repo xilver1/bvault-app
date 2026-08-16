@@ -2,7 +2,7 @@
 //! these straight over HTTP.
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// An ingested track — the raw-file lookup row: hash -> location, plus light
@@ -52,4 +52,15 @@ pub struct Batch {
     pub hashes: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub user_id: Option<Uuid>,
+}
+
+/// A search result returned from the yt-dlp discovery service.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResult {
+    pub title: String,
+    pub url: String,
+    pub duration_secs: Option<u32>,   // Option: yt-dlp returns null for live streams
+    pub uploader: String,
+    pub thumbnail: Option<String>,    // for future Android UI
+    pub video_id: String,
 }

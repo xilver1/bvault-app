@@ -23,6 +23,8 @@ pub struct Config {
     pub session_ttl: Duration,
     /// URL of the yt-dlp ingestion microservice (if enabled).
     pub yt_dlp_service_url: Option<String>,
+    /// API Key used to secure inter-service comms (e.g. for yt-dlp-ingest -> gateway)
+    pub internal_api_key: Option<String>,
 }
 
 impl Config {
@@ -37,6 +39,7 @@ impl Config {
             // Default 30 days — long-lived enough for a phone client, still bounded.
             session_ttl: Duration::from_secs(optional("SESSION_TTL_SECONDS", "2592000").parse()?),
             yt_dlp_service_url: std::env::var("YT_DLP_SERVICE_URL").ok(),
+            internal_api_key: std::env::var("INTERNAL_API_KEY").ok(),
         })
     }
 }

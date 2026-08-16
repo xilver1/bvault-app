@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use bvault_jobs::{AnalysisJob, JobKind};
-use bvault_meta::{Playlist, Track};
+use bvault_meta::{Playlist, Track, SearchResult};
 
 use crate::error::{ApiResult, GatewayError};
 use crate::state::AppState;
@@ -30,6 +30,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ingest/upload", post(ingest_upload))
         .route("/ingest/gdrive", post(ingest_gdrive))
         .route("/ingest/ytdlp", post(ingest_ytdlp))
+        .route("/search", get(search_ytdlp))
         .with_state(state)
 }
 
@@ -526,6 +527,14 @@ struct YtDlpIngestResponse {
     message: String,
 }
 
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+    #[serde(default = "default_search_limit")]
+    limit: i64,
+}
+fn default_search_limit() -> i64 { 10 }
+
 /// Trigger yt-dlp microservice audio extraction and ingestion.
 async fn ingest_ytdlp(
     user: AuthUser,
@@ -559,4 +568,31 @@ async fn ingest_ytdlp(
         status: "accepted".into(),
         message: "yt-dlp audio ingestion initiated".into(),
     }))
+}
+
+async fn search_ytdlp(
+    _user: AuthUser,
+    State(st): State<AppState>,
+    Query(query): Query<SearchQuery>,
+) -> ApiResult<Json<Vec<SearchResult>>> {
+    let service_url = st.config.yt_dlp_service_url.as_deref()
+        .ok_or_else(|| GatewayError::BadRequest("yt-dlp service not configured".into()))?;
+
+    let client = reqwest::Client::new();
+    let mut req = client
+        .get(format!("{}/search", service_url.trim_end_matches('/')))
+        .query(&[("q", &query.q), ("limit", &query.limit.to_string())]);
+
+    if let Some(key) = &st.config.internal_api_key {
+        req = req.header("X-Internal-Key", key);   // symmetric internal auth
+    }
+
+    let resp = req.send().await
+        .map_err(|e| GatewayError::Internal(format!("yt-dlp search error: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(GatewayError::Internal("yt-dlp search request failed".into()));
+    }
+    let results = resp.json().await
+        .map_err(|e| GatewayError::Internal(format!("yt-dlp search parse error: {e}")))?;
+    Ok(Json(results))
 }

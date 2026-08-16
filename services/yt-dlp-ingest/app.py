@@ -2,7 +2,7 @@ import os
 import tempfile
 import asyncio
 from typing import Optional
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Query
 from pydantic import BaseModel
 import httpx
 import yt_dlp
@@ -69,3 +69,31 @@ def extract_audio(req: ExtractRequest, background_tasks: BackgroundTasks):
     target_url = req.gateway_url or GATEWAY_URL
     background_tasks.add_task(process_yt_dlp, req.url, req.user_id, target_url)
     return {"status": "accepted", "message": f"Queued extraction for {req.url}"}
+
+@app.get("/search")
+def search_yt_dlp(q: str, limit: int = 10, x_internal_key: Optional[str] = Header(None)):
+    if INTERNAL_API_KEY and x_internal_key != INTERNAL_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid internal key")
+
+    ydl_opts = {"extract_flat": True, "quiet": True, "no_warnings": True}
+    results = []
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(f"ytsearch{limit}:{q}", download=False)
+            for entry in info.get("entries", []):
+                vid = entry.get("id")
+                url = entry.get("url") or entry.get("webpage_url")
+                if not url and vid:                        # flat mode may omit URL
+                    url = f"https://www.youtube.com/watch?v={vid}"
+                results.append({
+                    "title": entry.get("title") or "Unknown Title",
+                    "url": url or "",
+                    "duration_secs": entry.get("duration"),
+                    "uploader": entry.get("uploader") or "Unknown",
+                    "thumbnail": entry.get("thumbnail"),
+                    "video_id": vid or "",
+                })
+        except Exception as e:
+            print(f"[yt-dlp-ingest] search error: {e}")
+            raise HTTPException(status_code=500, detail="Search failed")
+    return results

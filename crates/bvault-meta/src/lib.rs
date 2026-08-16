@@ -11,7 +11,7 @@
 mod model;
 mod queries;
 
-pub use model::{Batch, Playlist, Track, User};
+pub use model::{Batch, Playlist, Track, User, SearchResult};
 pub use queries::Meta;
 
 use thiserror::Error;
