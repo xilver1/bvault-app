@@ -88,7 +88,7 @@ def search_yt_dlp(q: str, limit: int = 10, x_internal_key: Optional[str] = Heade
                 results.append({
                     "title": entry.get("title") or "Unknown Title",
                     "url": url or "",
-                    "duration_secs": entry.get("duration"),
+                    "duration_secs": int(entry.get("duration")) if entry.get("duration") is not None else None,
                     "uploader": entry.get("uploader") or "Unknown",
                     "thumbnail": entry.get("thumbnail"),
                     "video_id": vid or "",

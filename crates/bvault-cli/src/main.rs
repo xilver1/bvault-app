@@ -28,8 +28,12 @@ enum Commands {
     /// Ingest a track (YouTube)
     Ingest {
         url: String,
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["local", "gdrive"])]
         youtube: bool,
+        #[arg(long, conflicts_with_all = ["youtube", "gdrive"])]
+        local: bool,
+        #[arg(long, conflicts_with_all = ["youtube", "local"])]
+        gdrive: bool,
     },
     /// List library
     Library,
@@ -62,8 +66,8 @@ async fn main() -> Result<()> {
         Commands::Register => {
             register::run_register_flow().await?;
         }
-        Commands::Ingest { url, youtube } => {
-            ingest::run_ingest_flow(url, *youtube).await?;
+        Commands::Ingest { url, youtube, local, gdrive } => {
+            ingest::run_ingest_flow(url, *youtube, *local, *gdrive).await?;
         }
         Commands::Library => {
             library::run_library_flow().await?;
