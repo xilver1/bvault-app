@@ -48,17 +48,19 @@ def process_yt_dlp(url: str, user_id: str, target_gateway_url: str):
                     "title": (None, title),
                     "artist": (None, artist),
                 }
-                headers = {}
+                headers = {"X-User-Id": user_id}
                 if INTERNAL_API_KEY:
                     headers["X-Internal-Key"] = INTERNAL_API_KEY
 
                 upload_url = f"{target_gateway_url.rstrip('/')}/ingest/upload"
-                # Internal service upload to gateway
+                print(f"[yt-dlp-ingest] Uploading '{title}' to gateway...", flush=True)
                 res = httpx.post(upload_url, files=files, headers=headers, timeout=60.0)
-                print(f"[yt-dlp-ingest] Ingested '{title}' status: {res.status_code}")
+                print(f"[yt-dlp-ingest] Ingested '{title}' status: {res.status_code}", flush=True)
             finally:
                 if os.path.exists(mp3_filename):
                     os.remove(mp3_filename)
+        else:
+            print(f"[yt-dlp-ingest] Error: MP3 file was not created at {mp3_filename}", flush=True)
 
 @app.get("/health")
 def health():
