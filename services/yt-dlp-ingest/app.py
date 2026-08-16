@@ -1,8 +1,9 @@
 import os
 import tempfile
+import time
+import random
 from typing import Optional
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Query
-from pydantic import BaseModel
 import httpx
 import yt_dlp
 from yt_dlp.networking.impersonate import ImpersonateTarget
@@ -12,6 +13,8 @@ app = FastAPI(title="BeatVault yt-dlp Ingestion Service")
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://gateway.bvault-prod.svc.cluster.local:8080")
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "")
 POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://127.0.0.1:4416")
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+BASE_BACKOFF_SECONDS = float(os.getenv("BASE_BACKOFF_SECONDS", "2.0"))
 
 class ExtractRequest(BaseModel):
     url: str
@@ -33,66 +36,74 @@ def _report_job(job_id: int, user_id: str, gateway_url: str, ok: bool, error: Op
 
 
 def process_yt_dlp(url: str, user_id: str, job_id: int, target_gateway_url: str):
-    try:
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': os.path.join(tempfile.gettempdir(), '%(id)s.%(ext)s'),
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '320',
-            }],
-            'quiet': True,
-            'no_warnings': True,
-            # Library API needs an ImpersonateTarget object, not a bare string
-            # (the --impersonate CLI flag does this conversion for you).
-            'impersonate': ImpersonateTarget.from_str('chrome'),
-            # Fetch a GVS PO token from the bgutil sidecar so YouTube authorizes
-            # the media download (this is the fix for the 403). base_url matches
-            # the plugin default, set explicitly so it's greppable + overridable.
-            'extractor_args': {
-                'youtubepot-bgutilhttp': {'base_url': [POT_PROVIDER_URL]},
-            },
-        }
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': os.path.join(tempfile.gettempdir(), '%(id)s.%(ext)s'),
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '320',
+                }],
+                'quiet': True,
+                'no_warnings': True,
+                # Library API needs an ImpersonateTarget object, not a bare string
+                # (the --impersonate CLI flag does this conversion for you).
+                'impersonate': ImpersonateTarget.from_str('chrome'),
+                # Fetch a GVS PO token from the bgutil sidecar so YouTube authorizes
+                # the media download (this is the fix for the 403). base_url matches
+                # the plugin default, set explicitly so it's greppable + overridable.
+                'extractor_args': {
+                    'youtubepot-bgutilhttp': {'base_url': [POT_PROVIDER_URL]},
+                },
+            }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            mp3_filename = os.path.splitext(filename)[0] + ".mp3"
-            title = info.get("title") or info.get("track") or "Unknown Title"
-            artist = info.get("artist") or info.get("uploader") or "Unknown Artist"
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
+                mp3_filename = os.path.splitext(filename)[0] + ".mp3"
+                title = info.get("title") or info.get("track") or "Unknown Title"
+                artist = info.get("artist") or info.get("uploader") or "Unknown Artist"
 
-            if not os.path.exists(mp3_filename):
-                raise RuntimeError(f"MP3 file was not created at {mp3_filename}")
+                if not os.path.exists(mp3_filename):
+                    raise RuntimeError(f"MP3 file was not created at {mp3_filename}")
 
-            with open(mp3_filename, "rb") as f:
-                audio_bytes = f.read()
+                with open(mp3_filename, "rb") as f:
+                    audio_bytes = f.read()
 
-            try:
-                files = {
-                    "file": (os.path.basename(mp3_filename), audio_bytes, "audio/mpeg"),
-                    "title": (None, title),
-                    "artist": (None, artist),
-                }
-                headers = {"X-User-Id": user_id}
-                if INTERNAL_API_KEY:
-                    headers["X-Internal-Key"] = INTERNAL_API_KEY
+                try:
+                    files = {
+                        "file": (os.path.basename(mp3_filename), audio_bytes, "audio/mpeg"),
+                        "title": (None, title),
+                        "artist": (None, artist),
+                    }
+                    headers = {"X-User-Id": user_id}
+                    if INTERNAL_API_KEY:
+                        headers["X-Internal-Key"] = INTERNAL_API_KEY
 
-                upload_url = f"{target_gateway_url.rstrip('/')}/ingest/upload"
-                print(f"[yt-dlp-ingest] Uploading '{title}' to gateway...", flush=True)
-                res = httpx.post(upload_url, files=files, headers=headers, timeout=60.0)
-                if res.status_code >= 400:
-                    print(f"[yt-dlp-ingest] upload rejected {res.status_code}: {res.text}", flush=True)
-                res.raise_for_status()
-                print(f"[yt-dlp-ingest] Ingested '{title}' status: {res.status_code}", flush=True)
-            finally:
-                if os.path.exists(mp3_filename):
-                    os.remove(mp3_filename)
+                    upload_url = f"{target_gateway_url.rstrip('/')}/ingest/upload"
+                    print(f"[yt-dlp-ingest] Uploading '{title}' to gateway...", flush=True)
+                    res = httpx.post(upload_url, files=files, headers=headers, timeout=60.0)
+                    if res.status_code >= 400:
+                        print(f"[yt-dlp-ingest] upload rejected {res.status_code}: {res.text}", flush=True)
+                    res.raise_for_status()
+                    print(f"[yt-dlp-ingest] Ingested '{title}' status: {res.status_code}", flush=True)
+                finally:
+                    if os.path.exists(mp3_filename):
+                        os.remove(mp3_filename)
 
-        _report_job(job_id, user_id, target_gateway_url, ok=True)
-    except Exception as e:
-        print(f"[yt-dlp-ingest] job {job_id} failed: {e}", flush=True)
-        _report_job(job_id, user_id, target_gateway_url, ok=False, error=str(e))
+            _report_job(job_id, user_id, target_gateway_url, ok=True)
+            return  # Success!
+
+        except Exception as e:
+            if attempt < MAX_RETRIES:
+                sleep_time = random.uniform(0, BASE_BACKOFF_SECONDS * (2 ** attempt))
+                print(f"[yt-dlp-ingest] job {job_id} failed on attempt {attempt + 1}/{MAX_RETRIES + 1}: {e}. Retrying in {sleep_time:.2f}s...", flush=True)
+                time.sleep(sleep_time)
+            else:
+                print(f"[yt-dlp-ingest] job {job_id} permanently failed after {MAX_RETRIES + 1} attempts: {e}", flush=True)
+                _report_job(job_id, user_id, target_gateway_url, ok=False, error=str(e))
 
 
 @app.get("/health")
