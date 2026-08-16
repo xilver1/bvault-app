@@ -32,18 +32,15 @@ pub async fn run_export_flow(playlist_name: &str, usb: bool, path: Option<String
         let termux_storage_path = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("storage");
-
-        let mut is_termux = false;
         
         if termux_storage_path.exists() && termux_storage_path.is_dir() {
             // Tier 1: Termux Auto-Detection
-            is_termux = true;
             let mut items = vec![];
             let mut paths = vec![];
 
             let entries = std::fs::read_dir(&termux_storage_path)?;
             for entry in entries.flatten() {
-                if let Ok(file_type) = entry.file_type() {
+                if entry.file_type().is_ok() {
                     let name = entry.file_name().to_string_lossy().to_string();
                     items.push(format!("Android Storage: {}", name));
                     paths.push(entry.path());
@@ -133,7 +130,7 @@ pub async fn run_export_flow(playlist_name: &str, usb: bool, path: Option<String
     let opts = ReconcileOptions {
         base_url,
         export_id: build_data.export_id.to_string(),
-        usb_root,
+        usb_root: usb_root.clone(),
         auth_token: session.token.clone(),
     };
 
