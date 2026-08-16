@@ -21,6 +21,16 @@ struct SearchResult {
 }
 
 #[derive(Deserialize)]
+struct GDriveFiles {
+    files: Option<Vec<GDriveFileId>>,
+}
+
+#[derive(Deserialize)]
+struct GDriveFileId {
+    id: String,
+}
+
+#[derive(Deserialize)]
 struct Track {
     hash: String,
     title: Option<String>,
@@ -71,7 +81,6 @@ pub async fn run_ingest_flow(query: &str, youtube: bool, local: bool, gdrive: bo
         pb.finish_and_clear();
         let access_token = google_oauth_flow().await?;
         
-        // pb was finished, recreate it
         let pb = ProgressBar::new_spinner();
         pb.set_style(
             ProgressStyle::default_spinner()
@@ -80,11 +89,15 @@ pub async fn run_ingest_flow(query: &str, youtube: bool, local: bool, gdrive: bo
                 .unwrap(),
         );
         pb.enable_steady_tick(Duration::from_millis(100));
+        
+        pb.set_message(format!("Resolving Google Drive path: {}...", query));
+        let folder_id = resolve_gdrive_path(&http, &access_token, query).await?;
+        
         pb.set_message("Importing from Google Drive...");
 
         let payload = serde_json::json!({
             "access_token": access_token,
-            "folder_id": query,
+            "folder_id": folder_id,
         });
 
         http.post(&format!("{}/ingest/gdrive", base_url))
@@ -186,6 +199,47 @@ pub async fn run_ingest_flow(query: &str, youtube: bool, local: bool, gdrive: bo
     }
 
     Ok(())
+}
+
+async fn resolve_gdrive_path(http: &Client, access_token: &str, path: &str) -> Result<String> {
+    if !path.contains('/') {
+        return Ok(path.to_string());
+    }
+
+    let mut current_parent = "root".to_string();
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    
+    if segments.is_empty() {
+        return Ok("root".to_string());
+    }
+
+    for segment in segments {
+        // Query to find a folder with the exact name inside the current_parent
+        let q = format!("'{}' in parents and name = '{}' and trashed = false and mimeType = 'application/vnd.google-apps.folder'", current_parent, segment);
+        
+        let res = http.get("https://www.googleapis.com/drive/v3/files")
+            .bearer_auth(access_token)
+            .query(&[("q", q), ("fields", "files(id)".to_string())])
+            .send()
+            .await?;
+            
+        if !res.status().is_success() {
+            anyhow::bail!("Failed to query Google Drive API: {}", res.status());
+        }
+        
+        let data: GDriveFiles = res.json().await?;
+        if let Some(files) = data.files {
+            if let Some(first_file) = files.first() {
+                current_parent = first_file.id.clone();
+            } else {
+                anyhow::bail!("Folder '{}' not found in path '{}'", segment, path);
+            }
+        } else {
+            anyhow::bail!("Folder '{}' not found in path '{}'", segment, path);
+        }
+    }
+    
+    Ok(current_parent)
 }
 
 async fn google_oauth_flow() -> Result<String> {

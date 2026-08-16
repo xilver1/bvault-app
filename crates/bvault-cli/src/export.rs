@@ -16,31 +16,76 @@ struct CreateExportResponse {
     // manifest: Manifest ... (we don't need to parse it here)
 }
 
-pub async fn run_export_flow(playlist_name: &str) -> Result<()> {
+pub async fn run_export_flow(playlist_name: &str, usb: bool, path: Option<String>) -> Result<()> {
     let session = load_session().context("You are not logged in. Please run `bvault login` first.")?;
     let base_url = get_api_url();
 
-    // Find a USB device
-    let disks = Disks::new_with_refreshed_list();
-    let removable: Vec<_> = disks.iter().filter(|d| d.is_removable()).collect();
-    
-    if removable.is_empty() {
-        anyhow::bail!("No removable USB devices found!");
+    if !usb && path.is_none() {
+        anyhow::bail!("You must specify either --usb or --path");
     }
 
-    let items: Vec<String> = removable
-        .iter()
-        .map(|d| format!("{} - {:?}", d.mount_point().display(), d.name()))
-        .collect();
+    let usb_root = if let Some(p) = path {
+        // Tier 3: Manual Fallback
+        PathBuf::from(p)
+    } else {
+        // We have --usb flag, auto-detect
+        let termux_storage_path = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("storage");
 
-    let selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Choose your USB device:")
-        .default(0)
-        .items(&items)
-        .interact()?;
+        let mut is_termux = false;
+        
+        if termux_storage_path.exists() && termux_storage_path.is_dir() {
+            // Tier 1: Termux Auto-Detection
+            is_termux = true;
+            let mut items = vec![];
+            let mut paths = vec![];
 
-    let chosen_disk = removable[selection];
-    let usb_root = chosen_disk.mount_point().to_path_buf();
+            let entries = std::fs::read_dir(&termux_storage_path)?;
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    items.push(format!("Android Storage: {}", name));
+                    paths.push(entry.path());
+                }
+            }
+
+            if items.is_empty() {
+                anyhow::bail!("Termux storage found, but no drives are mapped! Did you run `termux-setup-storage`?");
+            }
+
+            let selection = Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("Choose your Termux drive:")
+                .default(0)
+                .items(&items)
+                .interact()?;
+
+            let chosen_drive = paths[selection].clone();
+            // Append Android's strict allowed write path for Termux
+            chosen_drive.join("Android/data/com.termux/files")
+        } else {
+            // Tier 2: Desktop Auto-Detection (sysinfo)
+            let disks = Disks::new_with_refreshed_list();
+            let removable: Vec<_> = disks.iter().filter(|d| d.is_removable()).collect();
+            
+            if removable.is_empty() {
+                anyhow::bail!("No removable USB devices found!");
+            }
+
+            let items: Vec<String> = removable
+                .iter()
+                .map(|d| format!("{} - {:?}", d.mount_point().display(), d.name()))
+                .collect();
+
+            let selection = Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("Choose your USB device:")
+                .default(0)
+                .items(&items)
+                .interact()?;
+
+            removable[selection].mount_point().to_path_buf()
+        }
+    };
     
     println!("✓ {} Chosen", usb_root.display());
 
@@ -94,7 +139,17 @@ pub async fn run_export_flow(playlist_name: &str) -> Result<()> {
 
     reconcile_export(opts, progress).await?;
     
-    println!("✓ rekordbox USB written — plug into any CDJ");
+    // We need to determine if we used the termux flow
+    let is_termux = usb_root.to_string_lossy().contains("com.termux");
+
+    if is_termux {
+        println!("✓ rekordbox USB written to Android app storage!");
+        println!("  IMPORTANT: Android 11+ prevents writing directly to the root of your USB drive.");
+        println!("  Please open your Android File Manager (e.g. Solid Explorer) and MOVE the 'PIONEER' and 'Contents' folders");
+        println!("  from {} to the absolute root of your USB drive before plugging it into a CDJ.", usb_root.display());
+    } else {
+        println!("✓ rekordbox USB written — plug into any CDJ");
+    }
 
     Ok(())
 }

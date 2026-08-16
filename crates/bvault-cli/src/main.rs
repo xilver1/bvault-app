@@ -46,8 +46,10 @@ enum Commands {
     /// Export a playlist to USB
     Export {
         playlist_name: String,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "path")]
         usb: bool,
+        #[arg(long, conflicts_with = "usb")]
+        path: Option<String>,
     },
 }
 
@@ -75,8 +77,8 @@ async fn main() -> Result<()> {
         Commands::Playlist { name, add } => {
             playlist::run_playlist_flow(name, add).await?;
         }
-        Commands::Export { playlist_name, usb: _ } => {
-            export::run_export_flow(playlist_name).await?;
+        Commands::Export { playlist_name, usb, path } => {
+            export::run_export_flow(playlist_name, *usb, path.clone()).await?;
         }
     }
 
