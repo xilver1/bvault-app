@@ -1,6 +1,4 @@
-//! HTTP surface with session-based authentication and ingestion handlers.
-
-use axum::extract::{FromRequestParts, Multipart, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, FromRequestParts, Multipart, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
@@ -15,6 +13,10 @@ use bvault_meta::{Playlist, Track, SearchResult};
 use crate::error::{ApiResult, GatewayError};
 use crate::state::AppState;
 
+/// Audio uploads are large (lossless DJ files, not just mp3), so the upload
+/// route opts out of axum's 2 MiB default. Other routes keep the small default.
+const MAX_UPLOAD_BYTES: usize = 200 * 1024 * 1024; // 200 MiB
+
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -27,7 +29,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/playlists/{id}/hashes", get(playlist_hashes))
         .route("/analyze", post(analyze))
         .route("/batches/{id}", get(batch_progress))
-        .route("/ingest/upload", post(ingest_upload))
+        .route(
+            "/ingest/upload",
+            post(ingest_upload).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
+        )
         .route("/ingest/gdrive", post(ingest_gdrive))
         .route("/ingest/ytdlp", post(ingest_ytdlp))
         .route("/search", get(search_ytdlp))
