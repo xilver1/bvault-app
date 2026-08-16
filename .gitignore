@@ -3,3 +3,5 @@
 /out/
 /cache/
 Cargo.lock
+gdrive_client_id.txt
+gdrive_client_secret.txt
