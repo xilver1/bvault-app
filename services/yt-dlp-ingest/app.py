@@ -11,7 +11,7 @@ app = FastAPI(title="BeatVault yt-dlp Ingestion Service")
 
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://gateway.bvault-prod.svc.cluster.local:8080")
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "")
-
+POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://127.0.0.1:4416")
 
 class ExtractRequest(BaseModel):
     url: str
@@ -47,6 +47,12 @@ def process_yt_dlp(url: str, user_id: str, job_id: int, target_gateway_url: str)
             # Library API needs an ImpersonateTarget object, not a bare string
             # (the --impersonate CLI flag does this conversion for you).
             'impersonate': ImpersonateTarget.from_str('chrome'),
+            # Fetch a GVS PO token from the bgutil sidecar so YouTube authorizes
+            # the media download (this is the fix for the 403). base_url matches
+            # the plugin default, set explicitly so it's greppable + overridable.
+            'extractor_args': {
+                'youtubepot-bgutilhttp': {'base_url': [POT_PROVIDER_URL]},
+            },
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

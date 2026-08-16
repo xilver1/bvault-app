@@ -1,5 +1,11 @@
 FROM python:3.11-slim
 
+# External JS runtime for YouTube nsig / challenge solving. This is separate
+# from the PO token (which comes from the sidecar); it's belt-and-suspenders for
+# the signature path that 2026 YouTube increasingly gates. Drop it if you want a
+# leaner image and your videos don't need it.
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     ca-certificates \
