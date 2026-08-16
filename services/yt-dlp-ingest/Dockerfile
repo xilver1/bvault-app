@@ -5,6 +5,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     build-essential \
     libffi-dev \
+    libssl-dev \
+    libnss3 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
