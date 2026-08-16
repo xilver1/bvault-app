@@ -1,0 +1,22 @@
+[package]
+name = "bvault-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bvault-transfer = { path = "../bvault-transfer" }
+tokio.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+dialoguer.workspace = true
+indicatif.workspace = true
+sysinfo.workspace = true
+dirs.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid = { version = "1.3", features = ["serde", "v4"] }
+comfy-table.workspace = true
+chrono = { version = "0.4", features = ["serde"] }
