@@ -25,8 +25,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/logout", post(logout))
         .route("/tracks", get(list_tracks).post(register_track))
         .route("/playlists", get(list_playlists).post(create_playlist))
-        .route("/playlists/{id}", get(get_playlist))
+        .route("/playlists/{id}", get(get_playlist).delete(delete_playlist_endpoint))
         .route("/playlists/{id}/hashes", get(playlist_hashes))
+        .route("/playlists/{id}/remove", post(remove_playlist_tracks_endpoint))
         .route("/analyze", post(analyze))
         .route("/batches/{id}", get(batch_progress))
         .route(
@@ -260,6 +261,30 @@ async fn playlist_hashes(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<String>>> {
     Ok(Json(st.meta.playlist_hashes(Some(user.id), id).await?))
+}
+
+async fn delete_playlist_endpoint(
+    user: AuthUser,
+    State(st): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    st.meta.delete_playlist(Some(user.id), id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct RemoveTracksRequest {
+    hashes: Vec<String>,
+}
+
+async fn remove_playlist_tracks_endpoint(
+    user: AuthUser,
+    State(st): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<RemoveTracksRequest>,
+) -> ApiResult<StatusCode> {
+    st.meta.remove_playlist_tracks(Some(user.id), id, &req.hashes).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---- analyze + progress -------------------------------------------------

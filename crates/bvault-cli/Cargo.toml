@@ -23,3 +23,4 @@ chrono = { version = "0.4", features = ["serde"] }
 oauth2.workspace = true
 tiny_http.workspace = true
 webbrowser.workspace = true
+strsim.workspace = true

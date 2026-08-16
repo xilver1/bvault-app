@@ -37,11 +37,10 @@ enum Commands {
     },
     /// List library
     Library,
-    /// Create a playlist
+    /// Manage playlists
     Playlist {
-        name: String,
-        #[arg(long)]
-        add: Option<String>, // comma separated
+        #[command(subcommand)]
+        command: PlaylistCommands,
     },
     /// Export a playlist to USB
     Export {
@@ -51,6 +50,20 @@ enum Commands {
         #[arg(long, conflicts_with = "usb")]
         path: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum PlaylistCommands {
+    /// List all playlists
+    List,
+    /// View tracks in a playlist
+    View { name: String },
+    /// Create or add tracks to a playlist
+    Add { name: String, tracks: Option<String> },
+    /// Remove tracks from a playlist
+    Remove { name: String, tracks: String },
+    /// Delete a playlist
+    Delete { name: String },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -74,8 +87,24 @@ async fn main() -> Result<()> {
         Commands::Library => {
             library::run_library_flow().await?;
         }
-        Commands::Playlist { name, add } => {
-            playlist::run_playlist_flow(name, add).await?;
+        Commands::Playlist { command: playlist_cmd } => {
+            match playlist_cmd {
+                PlaylistCommands::List => {
+                    playlist::run_playlist_list_flow().await?;
+                }
+                PlaylistCommands::View { name } => {
+                    playlist::run_playlist_view_flow(name).await?;
+                }
+                PlaylistCommands::Add { name, tracks } => {
+                    playlist::run_playlist_add_flow(name, tracks).await?;
+                }
+                PlaylistCommands::Remove { name, tracks } => {
+                    playlist::run_playlist_remove_flow(name, tracks).await?;
+                }
+                PlaylistCommands::Delete { name } => {
+                    playlist::run_playlist_delete_flow(name).await?;
+                }
+            }
         }
         Commands::Export { playlist_name, usb, path } => {
             export::run_export_flow(playlist_name, *usb, path.clone()).await?;

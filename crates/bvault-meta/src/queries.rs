@@ -177,6 +177,36 @@ impl Meta {
         Ok(id)
     }
 
+    pub async fn delete_playlist(&self, user_id: Option<Uuid>, id: Uuid) -> Result<()> {
+        sqlx::query("delete from playlists where id = $1 and ($2::uuid is null or user_id = $2)")
+            .bind(id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn remove_playlist_tracks(&self, user_id: Option<Uuid>, id: Uuid, hashes: &[String]) -> Result<()> {
+        // First verify ownership if user_id is provided
+        if let Some(uid) = user_id {
+            let exists: Option<(Uuid,)> = sqlx::query_as("select id from playlists where id = $1 and user_id = $2")
+                .bind(id)
+                .bind(uid)
+                .fetch_optional(&self.pool)
+                .await?;
+            if exists.is_none() {
+                return Ok(());
+            }
+        }
+
+        sqlx::query("delete from playlist_tracks where playlist_id = $1 and hash = any($2)")
+            .bind(id)
+            .bind(hashes)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn list_playlists(&self, user_id: Option<Uuid>) -> Result<Vec<Playlist>> {
         Ok(sqlx::query_as::<_, Playlist>(
             "select id, name, description, created_at, updated_at, user_id
