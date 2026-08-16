@@ -31,9 +31,19 @@ struct GDriveFileId {
 }
 
 #[derive(Deserialize)]
-struct Track {
-    hash: String,
+struct IngestResult {
     title: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct IngestAccepted {
+    job_id: i64,
+}
+
+#[derive(Deserialize)]
+struct JobStatusResponse {
+    status: String,
+    error: Option<String>,
 }
 
 pub async fn run_ingest_flow(query: &str, youtube: bool, local: bool, gdrive: bool) -> Result<()> {
@@ -42,163 +52,120 @@ pub async fn run_ingest_flow(query: &str, youtube: bool, local: bool, gdrive: bo
     let http = Client::new();
 
     let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-            .template("{spinner:.green} {msg}")
-            .unwrap(),
-    );
+    pb.set_style(spinner_style());
     pb.enable_steady_tick(Duration::from_millis(100));
 
-    // Get track count before
-    let initial_tracks: Vec<Track> = http
-        .get(&format!("{}/tracks", base_url))
-        .header("Authorization", format!("Bearer {}", session.token))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let initial_len = initial_tracks.len();
-
-    let ingest_res = if local {
+    if local {
         pb.set_message("Uploading local file...");
         let bytes = tokio::fs::read(query).await.context("Failed to read local file")?;
         let file_name = std::path::Path::new(query)
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-            
+            .file_name().unwrap_or_default().to_string_lossy().to_string();
         let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
         let form = reqwest::multipart::Form::new().part("file", part);
 
-        http.post(&format!("{}/ingest/upload", base_url))
+        let res = http.post(format!("{}/ingest/upload", base_url))
             .header("Authorization", format!("Bearer {}", session.token))
-            .multipart(form)
-            .send()
-            .await?
-    } else if gdrive {
-        pb.finish_and_clear();
-        let access_token = google_oauth_flow().await?;
-        
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-                .template("{spinner:.green} {msg}")
-                .unwrap(),
-        );
-        pb.enable_steady_tick(Duration::from_millis(100));
-        
-        pb.set_message(format!("Resolving Google Drive path: {}...", query));
-        let folder_id = resolve_gdrive_path(&http, &access_token, query).await?;
-        
-        pb.set_message("Importing from Google Drive...");
-
-        let payload = serde_json::json!({
-            "access_token": access_token,
-            "folder_id": folder_id,
-        });
-
-        http.post(&format!("{}/ingest/gdrive", base_url))
-            .header("Authorization", format!("Bearer {}", session.token))
-            .json(&payload)
-            .send()
-            .await?
-    } else {
-        // default / youtube flow
-        let target_url = if youtube {
-            pb.finish_and_clear(); // clear pb to show prompt
-            println!("Searching YouTube for: {}", query);
-            let res = http
-                .get(&format!("{}/search", base_url))
-                .header("Authorization", format!("Bearer {}", session.token))
-                .query(&[("q", query), ("limit", "5")])
-                .send()
-                .await?;
-
-            if !res.status().is_success() {
-                anyhow::bail!("Search failed: {}", res.status());
-            }
-
-            let results: Vec<SearchResult> = res.json().await?;
-            if results.is_empty() {
-                anyhow::bail!("No results found for '{}'", query);
-            }
-
-            println!("Top results:");
-            let items: Vec<String> = results
-                .iter()
-                .map(|r| format!("{} ({})", r.title, r.uploader))
-                .collect();
-
-            let selection = Select::with_theme(&ColorfulTheme::default())
-                .with_prompt("Choose a track to ingest:")
-                .default(0)
-                .items(&items)
-                .interact()?;
-
-            let chosen = &results[selection];
-            println!("✓ {} chosen (\"{}\")", chosen.title, chosen.url);
-            chosen.url.clone()
-        } else {
-            query.to_string()
-        };
-        
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-                .template("{spinner:.green} {msg}")
-                .unwrap(),
-        );
-        pb.enable_steady_tick(Duration::from_millis(100));
-        pb.set_message("downloading & analyzing...");
-
-        let payload = serde_json::json!({ "url": target_url });
-        http.post(&format!("{}/ingest/ytdlp", base_url))
-            .header("Authorization", format!("Bearer {}", session.token))
-            .json(&payload)
-            .send()
-            .await?
-    };
-
-    if !ingest_res.status().is_success() {
-        let status = ingest_res.status();
-        let _ = ingest_res.text().await; // consume error body if any
-        pb.finish_with_message(format!("✗ Ingest failed: {}", status));
-        anyhow::bail!("Ingest failed");
-    }
-
-    if gdrive {
-        pb.finish_with_message("✓ Google drive folder import started! Tracks will appear in library as they are processed.");
+            .multipart(form).send().await?;
+        if !res.status().is_success() {
+            let status = res.status(); let _ = res.text().await;
+            pb.finish_with_message(format!("✗ Upload failed: {}", status));
+            anyhow::bail!("upload failed");
+        }
+        // Local upload is synchronous: the response *is* the result.
+        let ingested: IngestResult = res.json().await?;
+        pb.finish_with_message(format!("✓ ingested: {}", ingested.title.as_deref().unwrap_or("Unknown Title")));
         return Ok(());
     }
 
-    // Poll until a new track appears (only for single track uploads/ytdlp)
-    pb.set_message("Waiting for processing to finish...");
-    loop {
-        sleep(Duration::from_secs(1)).await;
-        let current_tracks: Vec<Track> = http
-            .get(&format!("{}/tracks", base_url))
+    if gdrive {
+        pb.finish_and_clear();
+        let access_token = google_oauth_flow().await?;
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(spinner_style());
+        pb.enable_steady_tick(Duration::from_millis(100));
+        pb.set_message(format!("Resolving Google Drive path: {}...", query));
+        let folder_id = resolve_gdrive_path(&http, &access_token, query).await?;
+        pb.set_message("Importing from Google Drive...");
+        let payload = serde_json::json!({ "access_token": access_token, "folder_id": folder_id });
+        let res = http.post(format!("{}/ingest/gdrive", base_url))
             .header("Authorization", format!("Bearer {}", session.token))
-            .send()
-            .await?
-            .json()
-            .await?;
-
-        if current_tracks.len() > initial_len {
-            let new_track = current_tracks.iter().find(|ct| !initial_tracks.iter().any(|it| it.hash == ct.hash));
-            if let Some(track) = new_track {
-                pb.finish_with_message(format!("✓ ingested: {}", track.title.as_deref().unwrap_or("Unknown Title")));
-            } else {
-                pb.finish_with_message("✓ ingested successfully");
-            }
-            break;
+            .json(&payload).send().await?;
+        if !res.status().is_success() {
+            let status = res.status(); let _ = res.text().await;
+            pb.finish_with_message(format!("✗ Import failed: {}", status));
+            anyhow::bail!("gdrive import failed");
         }
+        pb.finish_with_message("✓ Google Drive folder import started! Tracks appear as they process.");
+        return Ok(());
     }
 
+    // youtube (with search) or a direct URL — both go through /ingest/ytdlp,
+    // which now returns a job id we poll to real terminal state.
+    let target_url = if youtube {
+        pb.finish_and_clear();
+        println!("Searching YouTube for: {}", query);
+        let res = http.get(format!("{}/search", base_url))
+            .header("Authorization", format!("Bearer {}", session.token))
+            .query(&[("q", query), ("limit", "5")]).send().await?;
+        if !res.status().is_success() { anyhow::bail!("Search failed: {}", res.status()); }
+        let results: Vec<SearchResult> = res.json().await?;
+        if results.is_empty() { anyhow::bail!("No results found for '{}'", query); }
+        println!("Top results:");
+        let items: Vec<String> = results.iter().map(|r| format!("{} ({})", r.title, r.uploader)).collect();
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Choose a track to ingest:").default(0).items(&items).interact()?;
+        let chosen = &results[selection];
+        println!("✓ {} chosen (\"{}\")", chosen.title, chosen.url);
+        chosen.url.clone()
+    } else {
+        query.to_string()
+    };
+
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(spinner_style());
+    pb.enable_steady_tick(Duration::from_millis(100));
+    pb.set_message("downloading & analyzing...");
+
+    let res = http.post(format!("{}/ingest/ytdlp", base_url))
+        .header("Authorization", format!("Bearer {}", session.token))
+        .json(&serde_json::json!({ "url": target_url })).send().await?;
+    if !res.status().is_success() {
+        let status = res.status(); let _ = res.text().await;
+        pb.finish_with_message(format!("✗ Ingest failed to start: {}", status));
+        anyhow::bail!("ingest failed to start");
+    }
+    let accepted: IngestAccepted = res.json().await?;
+
+    // Poll to a terminal state, with a timeout backstop so a dead background
+    // job can't hang the CLI forever.
+    let deadline = std::time::Instant::now() + Duration::from_secs(300);
+    loop {
+        if std::time::Instant::now() >= deadline {
+            pb.finish_with_message("✗ Timed out waiting for ingest. Check yt-dlp-ingest logs.");
+            anyhow::bail!("ingest timed out after 300s");
+        }
+        sleep(Duration::from_secs(2)).await;
+        let status: JobStatusResponse = http.get(format!("{}/jobs/{}", base_url, accepted.job_id))
+            .header("Authorization", format!("Bearer {}", session.token))
+            .send().await?.json().await?;
+        match status.status.as_str() {
+            "succeeded" => { pb.finish_with_message("✓ ingested successfully"); break; }
+            "failed" | "dead" => {
+                pb.finish_with_message(format!("✗ Ingest failed: {}",
+                    status.error.unwrap_or_else(|| "unknown error".into())));
+                anyhow::bail!("ingest failed");
+            }
+            _ => {} // pending / running — keep waiting
+        }
+    }
     Ok(())
+}
+
+fn spinner_style() -> ProgressStyle {
+    ProgressStyle::default_spinner()
+        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+        .template("{spinner:.green} {msg}")
+        .unwrap()
 }
 
 async fn resolve_gdrive_path(http: &Client, access_token: &str, path: &str) -> Result<String> {

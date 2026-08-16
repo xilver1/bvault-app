@@ -1,6 +1,5 @@
 import os
 import tempfile
-import asyncio
 from typing import Optional
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Query
 from pydantic import BaseModel
@@ -13,34 +12,53 @@ app = FastAPI(title="BeatVault yt-dlp Ingestion Service")
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://gateway.bvault-prod.svc.cluster.local:8080")
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "")
 
+
 class ExtractRequest(BaseModel):
     url: str
     user_id: str
+    job_id: int
     gateway_url: Optional[str] = None
 
-def process_yt_dlp(url: str, user_id: str, target_gateway_url: str):
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': os.path.join(tempfile.gettempdir(), '%(id)s.%(ext)s'),
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '320',
-        }],
-        'quiet': True,
-        'no_warnings': True,
-        'impersonate': ImpersonateTarget.from_str('chrome'),
-    }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
-        # Postprocessor converts to .mp3
-        mp3_filename = os.path.splitext(filename)[0] + ".mp3"
-        title = info.get("title") or info.get("track") or "Unknown Title"
-        artist = info.get("artist") or info.get("uploader") or "Unknown Artist"
+def _report_job(job_id: int, user_id: str, gateway_url: str, ok: bool, error: Optional[str] = None):
+    """Flip the job's terminal state on the gateway (which owns the DB)."""
+    try:
+        url = f"{gateway_url.rstrip('/')}/internal/jobs/{job_id}"
+        headers = {"X-User-Id": user_id}
+        if INTERNAL_API_KEY:
+            headers["X-Internal-Key"] = INTERNAL_API_KEY
+        httpx.post(url, json={"ok": ok, "error": error}, headers=headers, timeout=30.0)
+    except Exception as e:
+        print(f"[yt-dlp-ingest] failed to report job {job_id}: {e}", flush=True)
 
-        if os.path.exists(mp3_filename):
+
+def process_yt_dlp(url: str, user_id: str, job_id: int, target_gateway_url: str):
+    try:
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(tempfile.gettempdir(), '%(id)s.%(ext)s'),
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '320',
+            }],
+            'quiet': True,
+            'no_warnings': True,
+            # Library API needs an ImpersonateTarget object, not a bare string
+            # (the --impersonate CLI flag does this conversion for you).
+            'impersonate': ImpersonateTarget.from_str('chrome'),
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            mp3_filename = os.path.splitext(filename)[0] + ".mp3"
+            title = info.get("title") or info.get("track") or "Unknown Title"
+            artist = info.get("artist") or info.get("uploader") or "Unknown Artist"
+
+            if not os.path.exists(mp3_filename):
+                raise RuntimeError(f"MP3 file was not created at {mp3_filename}")
+
             with open(mp3_filename, "rb") as f:
                 audio_bytes = f.read()
 
@@ -57,22 +75,29 @@ def process_yt_dlp(url: str, user_id: str, target_gateway_url: str):
                 upload_url = f"{target_gateway_url.rstrip('/')}/ingest/upload"
                 print(f"[yt-dlp-ingest] Uploading '{title}' to gateway...", flush=True)
                 res = httpx.post(upload_url, files=files, headers=headers, timeout=60.0)
+                res.raise_for_status()
                 print(f"[yt-dlp-ingest] Ingested '{title}' status: {res.status_code}", flush=True)
             finally:
                 if os.path.exists(mp3_filename):
                     os.remove(mp3_filename)
-        else:
-            print(f"[yt-dlp-ingest] Error: MP3 file was not created at {mp3_filename}", flush=True)
+
+        _report_job(job_id, user_id, target_gateway_url, ok=True)
+    except Exception as e:
+        print(f"[yt-dlp-ingest] job {job_id} failed: {e}", flush=True)
+        _report_job(job_id, user_id, target_gateway_url, ok=False, error=str(e))
+
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+
 @app.post("/extract")
 def extract_audio(req: ExtractRequest, background_tasks: BackgroundTasks):
     target_url = req.gateway_url or GATEWAY_URL
-    background_tasks.add_task(process_yt_dlp, req.url, req.user_id, target_url)
-    return {"status": "accepted", "message": f"Queued extraction for {req.url}"}
+    background_tasks.add_task(process_yt_dlp, req.url, req.user_id, req.job_id, target_url)
+    return {"status": "accepted", "job_id": req.job_id}
+
 
 @app.get("/search")
 def search_yt_dlp(q: str, limit: int = 10, x_internal_key: Optional[str] = Header(None)):
@@ -87,7 +112,7 @@ def search_yt_dlp(q: str, limit: int = 10, x_internal_key: Optional[str] = Heade
             for entry in info.get("entries", []):
                 vid = entry.get("id")
                 url = entry.get("url") or entry.get("webpage_url")
-                if not url and vid:                        # flat mode may omit URL
+                if not url and vid:
                     url = f"https://www.youtube.com/watch?v={vid}"
                 results.append({
                     "title": entry.get("title") or "Unknown Title",

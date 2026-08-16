@@ -14,7 +14,7 @@
 mod model;
 mod queue;
 
-pub use model::{AnalysisJob, Job, JobKind, JobStatus};
+pub use model::{AnalysisJob, Job, JobKind, JobStatus, YtDlpIngestJob};
 pub use queue::Queue;
 
 use thiserror::Error;

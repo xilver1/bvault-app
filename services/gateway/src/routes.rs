@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use bvault_jobs::{AnalysisJob, JobKind};
+use bvault_jobs::{AnalysisJob, Job, JobKind, JobStatus, YtDlpIngestJob};
 use bvault_meta::{Playlist, Track, SearchResult};
 
 use crate::error::{ApiResult, GatewayError};
@@ -31,6 +31,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ingest/gdrive", post(ingest_gdrive))
         .route("/ingest/ytdlp", post(ingest_ytdlp))
         .route("/search", get(search_ytdlp))
+        .route("/jobs/{id}", get(get_job))
+        .route("/internal/jobs/{id}", post(report_job))
         .with_state(state)
 }
 
@@ -535,8 +537,8 @@ struct YtDlpIngestRequest {
 
 #[derive(Serialize)]
 struct YtDlpIngestResponse {
+    job_id: i64,
     status: String,
-    message: String,
 }
 
 #[derive(Deserialize)]
@@ -553,33 +555,89 @@ async fn ingest_ytdlp(
     State(st): State<AppState>,
     Json(req): Json<YtDlpIngestRequest>,
 ) -> ApiResult<Json<YtDlpIngestResponse>> {
-    let service_url = st
-        .config
-        .yt_dlp_service_url
-        .as_deref()
+    let service_url = st.config.yt_dlp_service_url.as_deref()
         .ok_or_else(|| GatewayError::BadRequest("yt-dlp ingestion service is not configured".into()))?;
 
+    // Record the run so the CLI can poll it. dedup on (user, url) collapses a
+    // repeat request while one is in flight into the same job (no double download).
+    let dedup_key = format!("{}:{}", user.id, req.url);
+    let payload = YtDlpIngestJob { url: req.url.clone(), user_id: user.id.to_string() };
+    let job_id = st.queue.enqueue(JobKind::YtDlpIngest, &dedup_key, &payload, 1).await?;
+
     let client = reqwest::Client::new();
-    let payload = serde_json::json!({
-        "url": req.url,
-        "user_id": user.id,
-    });
+    let body = serde_json::json!({ "url": req.url, "user_id": user.id, "job_id": job_id });
 
     let resp = client
         .post(format!("{}/extract", service_url.trim_end_matches('/')))
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| GatewayError::Internal(format!("yt-dlp service error: {e}")))?;
+        .json(&body).send().await;
 
-    if !resp.status().is_success() {
-        return Err(GatewayError::Internal("yt-dlp extraction job failed to start".into()));
+    // If we can't even hand the work off, terminally fail the job so the CLI
+    // poll returns failure instead of spinning.
+    match resp {
+        Ok(r) if r.status().is_success() => {}
+        Ok(r) => {
+            let _ = st.queue.mark_dead(job_id, &format!("yt-dlp service returned {}", r.status())).await;
+            return Err(GatewayError::Internal("yt-dlp extraction job failed to start".into()));
+        }
+        Err(e) => {
+            let _ = st.queue.mark_dead(job_id, &format!("yt-dlp service unreachable: {e}")).await;
+            return Err(GatewayError::Internal(format!("yt-dlp service error: {e}")));
+        }
     }
 
-    Ok(Json(YtDlpIngestResponse {
-        status: "accepted".into(),
-        message: "yt-dlp audio ingestion initiated".into(),
-    }))
+    Ok(Json(YtDlpIngestResponse { job_id, status: "accepted".into() }))
+}
+
+#[derive(Serialize)]
+struct JobStatusResponse {
+    status: JobStatus,
+    error: Option<String>,
+}
+
+/// Poll one ingest job's terminal state. Scoped to the owner via the payload's
+/// user_id (yt-dlp jobs carry it); anything else 404s.
+async fn get_job(
+    user: AuthUser,
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<JobStatusResponse>> {
+    let job = st.queue.get(id).await?.ok_or(GatewayError::NotFound)?;
+    if !job_owned_by(&job, &user) {
+        return Err(GatewayError::NotFound); // 404 not 403, to avoid id enumeration
+    }
+    Ok(Json(JobStatusResponse { status: job.status, error: job.last_error }))
+}
+
+#[derive(Deserialize)]
+struct JobReport {
+    ok: bool,
+    error: Option<String>,
+}
+
+/// Internal callback from the yt-dlp service to flip a job terminal. Auth rides
+/// the same internal-key path as AuthUser; ownership is re-checked so a stray
+/// token can only touch its own jobs.
+async fn report_job(
+    user: AuthUser,
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Json(r): Json<JobReport>,
+) -> ApiResult<StatusCode> {
+    let job = st.queue.get(id).await?.ok_or(GatewayError::NotFound)?;
+    if !job_owned_by(&job, &user) {
+        return Err(GatewayError::NotFound);
+    }
+    if r.ok {
+        st.queue.complete(id).await?;
+    } else {
+        st.queue.mark_dead(id, r.error.as_deref().unwrap_or("yt-dlp ingest failed")).await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn job_owned_by(job: &Job, user: &AuthUser) -> bool {
+    job.payload.0.get("user_id").and_then(|v| v.as_str())
+        == Some(user.id.to_string().as_str())
 }
 
 async fn search_ytdlp(

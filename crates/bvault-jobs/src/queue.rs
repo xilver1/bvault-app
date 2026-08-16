@@ -27,6 +27,40 @@ pub struct Queue {
 }
 
 impl Queue {
+    /// Fetch a single job by id (for status polling). `None` if unknown.
+    pub async fn get(&self, job_id: i64) -> Result<Option<Job>> {
+        let job = sqlx::query_as::<_, Job>(
+            r#"
+            select id, kind, dedup_key, payload, status, attempts,
+                   max_attempts, locked_until, last_error, created_at
+            from jobs where id = $1
+            "#,
+        )
+        .bind(job_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(job)
+    }
+
+    /// Terminally park a job as `dead` — for work executed outside the worker
+    /// pool (the yt-dlp service), where `fail`'s retry path doesn't apply
+    /// because nothing will re-claim it.
+    pub async fn mark_dead(&self, job_id: i64, error: &str) -> Result<()> {
+        sqlx::query(
+            r#"
+            update jobs
+            set status = 'dead', last_error = $2, locked_until = null,
+                finished_at = now(), updated_at = now()
+            where id = $1
+            "#,
+        )
+        .bind(job_id)
+        .bind(error)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Connect to Postgres (DSN injected from config — never hardcoded).
     /// Migrations are the gateway's responsibility, not the queue's.
     pub async fn connect(url: &str, max_conns: u32) -> Result<Self> {

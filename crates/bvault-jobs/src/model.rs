@@ -13,6 +13,18 @@ use sqlx::types::Json;
 pub enum JobKind {
     /// Analyze one track by content hash.
     Analysis,
+    /// Fetch+transcode one URL via the Python yt-dlp service. The row exists
+    /// only so the CLI can poll terminal state; the work runs out-of-band.
+    YtDlpIngest,
+}
+
+/// Payload for a [`JobKind::YtDlpIngest`] job. `user_id` is carried here rather
+/// than as a column so ownership checks work without a jobs-table schema change
+/// while user-scoping lands in Step 1b.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct YtDlpIngestJob {
+    pub url: String,
+    pub user_id: String,
 }
 
 /// Lifecycle state. Postgres enum `job_status`.
