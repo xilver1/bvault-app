@@ -35,7 +35,6 @@ pub async fn run_library_flow() -> Result<()> {
     table.load_preset(comfy_table::presets::UTF8_FULL);
     
     table.set_header(vec![
-        Cell::new("Hash").add_attribute(Attribute::Bold),
         Cell::new("Artist").add_attribute(Attribute::Bold),
         Cell::new("Title").add_attribute(Attribute::Bold),
         Cell::new("Added At").add_attribute(Attribute::Bold),
@@ -43,7 +42,6 @@ pub async fn run_library_flow() -> Result<()> {
 
     for t in tracks {
         table.add_row(vec![
-            Cell::new(&t.hash[0..8]).fg(Color::Cyan),
             Cell::new(t.artist.as_deref().unwrap_or("-")),
             Cell::new(t.title.as_deref().unwrap_or("-")),
             Cell::new(t.added_at.format("%Y-%m-%d").to_string()),

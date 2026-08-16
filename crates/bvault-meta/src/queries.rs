@@ -139,13 +139,28 @@ impl Meta {
         hashes: &[String],
     ) -> Result<Uuid> {
         let mut tx = self.pool.begin().await?;
-        let (id,): (Uuid,) =
-            sqlx::query_as("insert into playlists (user_id, name, description) values ($1, $2, $3) returning id")
+        let existing: Option<(Uuid,)> = sqlx::query_as(
+            "select id from playlists where user_id = $1 and name = $2 limit 1"
+        )
+        .bind(user_id)
+        .bind(name)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let id = match existing {
+            Some((existing_id,)) => existing_id,
+            None => {
+                let (new_id,): (Uuid,) = sqlx::query_as(
+                    "insert into playlists (user_id, name, description) values ($1, $2, $3) returning id"
+                )
                 .bind(user_id)
                 .bind(name)
                 .bind(description)
                 .fetch_one(&mut *tx)
                 .await?;
+                new_id
+            }
+        };
 
         for hash in hashes {
             sqlx::query(
