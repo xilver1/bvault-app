@@ -39,9 +39,16 @@ enum Commands {
         youtube_sso: bool,
         #[arg(long, conflicts_with_all = ["youtube", "local", "gdrive", "youtube_sso"])]
         youtube_playlist: bool,
+        /// For --local on a directory: make each top-level subfolder a playlist.
+        #[arg(long, requires = "local")]
+        playlists: bool,
     },
-    /// List library
-    Library,
+    /// List library (optionally filter by title)
+    Library {
+        /// Case-insensitive title search
+        #[arg(long)]
+        search: Option<String>,
+    },
     /// Manage playlists
     Playlist {
         #[command(subcommand)]
@@ -86,11 +93,11 @@ async fn main() -> Result<()> {
         Commands::Register => {
             register::run_register_flow().await?;
         }
-        Commands::Ingest { query, youtube, local, gdrive, youtube_sso, youtube_playlist } => {
-            ingest::run_ingest_flow(query.as_deref(), *youtube, *local, *gdrive, *youtube_sso, *youtube_playlist).await?;
+        Commands::Ingest { query, youtube, local, gdrive, youtube_sso, youtube_playlist, playlists } => {
+            ingest::run_ingest_flow(query.as_deref(), *youtube, *local, *gdrive, *youtube_sso, *youtube_playlist, *playlists).await?;
         }
-        Commands::Library => {
-            library::run_library_flow().await?;
+        Commands::Library { search } => {
+            library::run_library_flow(search.as_deref()).await?;
         }
         Commands::Playlist { command: playlist_cmd } => {
             match playlist_cmd {

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use bvault_jobs::{AnalysisJob, Job, JobKind, JobStatus, YtDlpIngestJob};
-use bvault_meta::{Playlist, Track, SearchResult};
+use bvault_meta::{Playlist, SearchResult};
 
 use crate::error::{ApiResult, GatewayError};
 use crate::state::AppState;
@@ -175,17 +175,84 @@ struct Pagination {
     limit: i64,
     #[serde(default)]
     offset: i64,
+    /// Optional case-insensitive title substring filter (library search).
+    #[serde(default)]
+    q: Option<String>,
 }
 fn default_limit() -> i64 {
     100
+}
+
+/// Enriched track row for the library listing: DB display metadata plus, when a
+/// track has been analyzed, duration/bpm/bitrate/size read from the artifact
+/// store's `analysis.json` (store presence = truth). `size_bytes` still resolves
+/// for un-analyzed tracks by stat-ing the raw file. Artist is intentionally
+/// dropped — for yt-dlp ingests it's the uploading channel, not the artist, and
+/// there is no reliable rule to recover it from the title.
+#[derive(Serialize)]
+struct TrackView {
+    hash: String,
+    title: Option<String>,
+    added_at: DateTime<Utc>,
+    duration_secs: Option<f64>,
+    bpm: Option<f64>,
+    bitrate: Option<u32>,
+    size_bytes: Option<u64>,
+}
+
+/// The few fields we read out of `analysis.json`. serde ignores the rest, so the
+/// gateway needn't depend on the full analysis/core crate to read a summary.
+#[derive(Deserialize)]
+struct AnalysisSummary {
+    duration_secs: f64,
+    bpm: f64,
+    bitrate: u32,
+    file_size: u64,
 }
 
 async fn list_tracks(
     user: AuthUser,
     State(st): State<AppState>,
     Query(p): Query<Pagination>,
-) -> ApiResult<Json<Vec<Track>>> {
-    Ok(Json(st.meta.list_tracks(Some(user.id), p.limit, p.offset).await?))
+) -> ApiResult<Json<Vec<TrackView>>> {
+    let q = p.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let tracks = st.meta.list_tracks(Some(user.id), p.limit, p.offset, q).await?;
+
+    let mut out = Vec::with_capacity(tracks.len());
+    for t in tracks {
+        // Analysis-derived fields only exist once the track is analyzed; absence
+        // of the artifact is simply "not analyzed yet", shown as blanks.
+        let summary = st
+            .artifacts
+            .get(&t.hash, "analysis.json")
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<AnalysisSummary>(&bytes).ok());
+
+        let (duration_secs, bpm, bitrate, mut size_bytes) = match summary {
+            Some(s) => (Some(s.duration_secs), Some(s.bpm), Some(s.bitrate), Some(s.file_size)),
+            None => (None, None, None, None),
+        };
+
+        // Size is cheap to show even without analysis: stat the raw file.
+        if size_bytes.is_none() {
+            if let Ok(path) = st.raw.resolve(&t.raw_location) {
+                if let Ok(md) = std::fs::metadata(path) {
+                    size_bytes = Some(md.len());
+                }
+            }
+        }
+
+        out.push(TrackView {
+            hash: t.hash,
+            title: t.title,
+            added_at: t.added_at,
+            duration_secs,
+            bpm,
+            bitrate,
+            size_bytes,
+        });
+    }
+    Ok(Json(out))
 }
 
 #[derive(Deserialize)]

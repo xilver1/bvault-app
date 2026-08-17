@@ -25,3 +25,4 @@ tiny_http.workspace = true
 webbrowser.workspace = true
 strsim.workspace = true
 regex = "1.13.1"
+terminal_size = "0.4"

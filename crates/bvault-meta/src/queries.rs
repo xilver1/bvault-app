@@ -114,12 +114,22 @@ impl Meta {
         Ok(())
     }
 
-    pub async fn list_tracks(&self, user_id: Option<Uuid>, limit: i64, offset: i64) -> Result<Vec<Track>> {
+    /// List a user's tracks, newest first. When `q` is `Some`, filters to titles
+    /// containing it (case-insensitive substring). Untitled tracks never match a
+    /// search (ilike over NULL is NULL), which is the intended behaviour.
+    pub async fn list_tracks(
+        &self,
+        user_id: Option<Uuid>,
+        limit: i64,
+        offset: i64,
+        q: Option<&str>,
+    ) -> Result<Vec<Track>> {
         Ok(sqlx::query_as::<_, Track>(
             r#"
             select hash, raw_location, title, artist, added_at, user_id
             from tracks
             where ($1::uuid is null or user_id = $1)
+              and ($4::text is null or title ilike '%' || $4 || '%')
             order by added_at desc
             limit $2 offset $3
             "#,
@@ -127,6 +137,7 @@ impl Meta {
         .bind(user_id)
         .bind(limit)
         .bind(offset)
+        .bind(q)
         .fetch_all(&self.pool)
         .await?)
     }

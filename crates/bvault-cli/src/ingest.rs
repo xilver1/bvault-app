@@ -32,6 +32,7 @@ struct GDriveFileId {
 
 #[derive(Deserialize)]
 struct IngestResult {
+    hash: String,
     title: Option<String>,
 }
 
@@ -89,7 +90,7 @@ struct YTResourceId {
     video_id: String,
 }
 
-pub async fn run_ingest_flow(query: Option<&str>, youtube: bool, local: bool, gdrive: bool, youtube_sso: bool, youtube_playlist: bool) -> Result<()> {
+pub async fn run_ingest_flow(query: Option<&str>, youtube: bool, local: bool, gdrive: bool, youtube_sso: bool, youtube_playlist: bool, playlists: bool) -> Result<()> {
     let query_str = query.unwrap_or_default();
     let session = load_session().context("You are not logged in. Please run `bvault login` first.")?;
     let base_url = get_api_url();
@@ -100,24 +101,8 @@ pub async fn run_ingest_flow(query: Option<&str>, youtube: bool, local: bool, gd
     pb.enable_steady_tick(Duration::from_millis(100));
 
     if local {
-        pb.set_message("Uploading local file...");
-        let bytes = tokio::fs::read(query_str).await.context("Failed to read local file")?;
-        let file_name = std::path::Path::new(query_str)
-            .file_name().unwrap_or_default().to_string_lossy().to_string();
-        let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
-        let form = reqwest::multipart::Form::new().part("file", part);
-
-        let res = http.post(format!("{}/ingest/upload", base_url))
-            .header("Authorization", format!("Bearer {}", session.token))
-            .multipart(form).send().await?;
-        if !res.status().is_success() {
-            let status = res.status(); let _ = res.text().await;
-            pb.finish_with_message(format!("✗ Upload failed: {}", status));
-            anyhow::bail!("upload failed");
-        }
-        let ingested: IngestResult = res.json().await?;
-        pb.finish_with_message(format!("✓ ingested: {}", ingested.title.as_deref().unwrap_or("Unknown Title")));
-        return Ok(());
+        pb.finish_and_clear();
+        return run_local_ingest(&http, &base_url, &session.token, query_str, playlists).await;
     }
 
     if gdrive {
@@ -463,4 +448,228 @@ async fn google_oauth_flow(scope_url: &str) -> Result<String> {
     .await??;
     
     Ok(access_token)
+}
+
+// ---- local ingestion (file, directory, directory-as-playlists) -------------
+
+const AUDIO_EXTS: &[&str] =
+    &["mp3", "flac", "wav", "aiff", "aif", "m4a", "aac", "ogg", "opus", "wma", "alac"];
+
+/// Local ingestion. Three shapes:
+/// - a file → upload it;
+/// - a directory (default) → recurse and upload every audio file, no grouping;
+/// - a directory with `--playlists` → each **top-level** subfolder becomes a
+///   playlist of the audio files directly inside it. Per the spec, deeper
+///   subfolders are ignored (their files are skipped, not rolled up); audio
+///   sitting loose in the root is uploaded without a playlist.
+async fn run_local_ingest(
+    http: &Client,
+    base_url: &str,
+    token: &str,
+    path_str: &str,
+    as_playlists: bool,
+) -> Result<()> {
+    let root = std::path::Path::new(path_str);
+    if !root.exists() {
+        anyhow::bail!("Path does not exist: {}", path_str);
+    }
+
+    if root.is_file() {
+        let r = upload_one(http, base_url, token, root).await?;
+        println!("✓ ingested: {}", r.title.as_deref().unwrap_or("Unknown Title"));
+        return Ok(());
+    }
+
+    if !as_playlists {
+        let mut files = Vec::new();
+        collect_audio_recursive(root, &mut files);
+        if files.is_empty() {
+            anyhow::bail!("No audio files found under {}", path_str);
+        }
+        println!("Found {} audio file(s). Uploading...", files.len());
+        let (ok, failed) = upload_all(http, base_url, token, &files).await;
+        println!(
+            "✓ ingested {} file(s){}.",
+            ok.len(),
+            if failed > 0 { format!(", {} failed", failed) } else { String::new() }
+        );
+        return Ok(());
+    }
+
+    // --playlists: top-level subfolders become playlists.
+    let mut made_any = false;
+
+    let loose = direct_audio_children(root);
+    if !loose.is_empty() {
+        println!("Uploading {} loose file(s) in the root (no playlist)...", loose.len());
+        let _ = upload_all(http, base_url, token, &loose).await;
+        made_any = true;
+    }
+
+    for dir in subdirs(root) {
+        let name = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "playlist".into());
+        // Roll-up: every audio file anywhere under this top-level subfolder joins
+        // its playlist. Nesting only shapes playlists (no nested playlists); no
+        // track is dropped.
+        let mut files = Vec::new();
+        collect_audio_recursive(&dir, &mut files);
+        if files.is_empty() {
+            println!("- {} (no audio directly inside, skipped)", name);
+            continue;
+        }
+        println!("Playlist \"{}\": {} track(s)...", name, files.len());
+        let (hashes, failed) = upload_all(http, base_url, token, &files).await;
+        if hashes.is_empty() {
+            println!("  ✗ all uploads failed, playlist not created");
+            continue;
+        }
+        create_playlist(http, base_url, token, &name, &hashes)
+            .await
+            .with_context(|| format!("creating playlist {}", name))?;
+        println!(
+            "  ✓ created \"{}\" with {} track(s){}.",
+            name,
+            hashes.len(),
+            if failed > 0 { format!(" ({} failed)", failed) } else { String::new() }
+        );
+        made_any = true;
+    }
+
+    if !made_any {
+        anyhow::bail!("No audio files found under {}", path_str);
+    }
+    Ok(())
+}
+
+/// Upload a batch; returns (successful hashes, failed count). Best-effort:
+/// failures are printed and skipped so one bad file doesn't abort the folder.
+async fn upload_all(
+    http: &Client,
+    base_url: &str,
+    token: &str,
+    files: &[std::path::PathBuf],
+) -> (Vec<String>, usize) {
+    let pb = ProgressBar::new(files.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{bar:30} {pos}/{len} {msg}")
+            .unwrap(),
+    );
+    let mut hashes = Vec::new();
+    let mut failed = 0usize;
+    for f in files {
+        let label = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        pb.set_message(label.clone());
+        match upload_one(http, base_url, token, f).await {
+            Ok(r) => hashes.push(r.hash),
+            Err(e) => {
+                failed += 1;
+                pb.println(format!("  ✗ {}: {}", label, e));
+            }
+        }
+        pb.inc(1);
+    }
+    pb.finish_and_clear();
+    (hashes, failed)
+}
+
+async fn upload_one(
+    http: &Client,
+    base_url: &str,
+    token: &str,
+    path: &std::path::Path,
+) -> Result<IngestResult> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .with_context(|| format!("reading {}", path.display()))?;
+    let file_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
+    let form = reqwest::multipart::Form::new().part("file", part);
+    let res = http
+        .post(format!("{}/ingest/upload", base_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .multipart(form)
+        .send()
+        .await?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        anyhow::bail!("upload failed ({}): {}", status, body.chars().take(120).collect::<String>());
+    }
+    Ok(res.json::<IngestResult>().await?)
+}
+
+async fn create_playlist(
+    http: &Client,
+    base_url: &str,
+    token: &str,
+    name: &str,
+    hashes: &[String],
+) -> Result<()> {
+    let payload = serde_json::json!({ "name": name, "hashes": hashes });
+    let res = http
+        .post(format!("{}/playlists", base_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&payload)
+        .send()
+        .await?;
+    if !res.status().is_success() {
+        anyhow::bail!("create playlist failed ({})", res.status());
+    }
+    Ok(())
+}
+
+fn is_audio_file(path: &std::path::Path) -> bool {
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| AUDIO_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+            .unwrap_or(false)
+}
+
+/// Audio files directly inside `dir` (non-recursive), sorted for stable order.
+fn direct_audio_children(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut v: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| is_audio_file(p))
+        .collect();
+    v.sort();
+    v
+}
+
+/// Immediate subdirectories of `dir`, sorted.
+fn subdirs(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut v: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    v.sort();
+    v
+}
+
+/// All audio files under `dir`, recursively (used when not grouping playlists).
+fn collect_audio_recursive(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut paths: Vec<std::path::PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for p in paths {
+        if p.is_dir() {
+            collect_audio_recursive(&p, out);
+        } else if is_audio_file(&p) {
+            out.push(p);
+        }
+    }
 }
