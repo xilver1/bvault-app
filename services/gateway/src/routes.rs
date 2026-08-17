@@ -517,6 +517,17 @@ async fn ingest_upload(
         )
         .await?;
 
+    if !st.artifacts.exists(&hash) {
+        let payload = AnalysisJob {
+            hash: hash.clone(),
+            raw_location: raw_location.clone(),
+            fallback_title: final_title.clone(),
+        };
+        let _ = st.queue
+            .enqueue(JobKind::Analysis, &hash, &payload, st.config.analysis_max_attempts)
+            .await;
+    }
+
     Ok(Json(IngestResult {
         hash,
         raw_location,
@@ -612,6 +623,17 @@ async fn ingest_gdrive(
                 .meta
                 .upsert_track(Some(user.id), &hash, &raw_location, title.as_deref(), None)
                 .await;
+
+            if !st.artifacts.exists(&hash) {
+                let payload = AnalysisJob {
+                    hash: hash.clone(),
+                    raw_location: raw_location.clone(),
+                    fallback_title: title.clone(),
+                };
+                let _ = st.queue
+                    .enqueue(JobKind::Analysis, &hash, &payload, st.config.analysis_max_attempts)
+                    .await;
+            }
 
             imported.push(IngestResult {
                 hash,
