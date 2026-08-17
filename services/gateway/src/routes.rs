@@ -594,10 +594,12 @@ async fn ingest_gdrive(
             continue;
         }
 
-        let download_url = format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", file.id);
+        let download_url = format!(
+            "https://www.googleapis.com/drive/v3/files/{}?alt=media&access_token={}",
+            file.id, req.access_token
+        );
         let bytes_res = client
             .get(&download_url)
-            .bearer_auth(&req.access_token)
             .send()
             .await;
 
