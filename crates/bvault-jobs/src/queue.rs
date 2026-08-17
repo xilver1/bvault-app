@@ -225,4 +225,25 @@ impl Queue {
         .await?;
         Ok(n)
     }
+
+    /// Dedup keys of jobs already `succeeded` for a kind, restricted to those
+    /// matching `key_prefix` (a plain LIKE prefix — callers pass a value with no
+    /// `%`/`_`, e.g. a UUID + ':'). Lets the CLI diff a playlist against what it
+    /// has already ingested so a resumed run only submits tracks that never
+    /// finished, instead of re-downloading everything (job dedup is in-flight
+    /// only, so terminal jobs don't otherwise suppress a re-submit).
+    pub async fn completed_keys(&self, kind: JobKind, key_prefix: &str) -> Result<Vec<String>> {
+        let pattern = format!("{key_prefix}%");
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"
+            select dedup_key from jobs
+            where kind = $1 and status = 'succeeded' and dedup_key like $2
+            "#,
+        )
+        .bind(kind)
+        .bind(pattern)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(k,)| k).collect())
+    }
 }

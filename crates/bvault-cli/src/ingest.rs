@@ -211,11 +211,36 @@ pub async fn run_ingest_flow(query: Option<&str>, youtube: bool, local: bool, gd
             anyhow::bail!("Playlist is empty or all videos are private/deleted.");
         }
         
-        println!("Submitting {} videos for ingestion...", video_ids.len());
+        // Skip videos already ingested in a prior run. Job dedup is in-flight
+        // only, so a finished job won't suppress a re-submit — without this a
+        // resumed playlist re-downloads everything. Ask the gateway which URLs
+        // already succeeded for this user and diff the playlist against them. If
+        // the endpoint is unavailable, fall back to submitting all (old behaviour).
+        let already_done: std::collections::HashSet<String> = match http
+            .get(format!("{}/ingest/ytdlp/completed", base_url))
+            .header("Authorization", format!("Bearer {}", session.token))
+            .send().await
+        {
+            Ok(r) if r.status().is_success() => r.json::<Vec<String>>().await.unwrap_or_default(),
+            _ => Vec::new(),
+        }
+        .into_iter()
+        .collect();
+
+        let to_submit: Vec<String> = video_ids.iter()
+            .map(|vid| format!("https://www.youtube.com/watch?v={}", vid))
+            .filter(|url| !already_done.contains(url))
+            .collect();
+
+        let skipped = video_ids.len() - to_submit.len();
+        if skipped > 0 {
+            println!("Skipping {} already-ingested video(s) from a previous run.", skipped);
+        }
+
+        println!("Submitting {} videos for ingestion...", to_submit.len());
         let mut job_ids = Vec::new();
-        let pb_submit = indicatif::ProgressBar::new(video_ids.len() as u64);
-        for vid in &video_ids {
-            let target_url = format!("https://www.youtube.com/watch?v={}", vid);
+        let pb_submit = indicatif::ProgressBar::new(to_submit.len() as u64);
+        for target_url in &to_submit {
             let res = http.post(format!("{}/ingest/ytdlp", base_url))
                 .header("Authorization", format!("Bearer {}", session.token))
                 .json(&serde_json::json!({ "url": target_url })).send().await;

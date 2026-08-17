@@ -36,6 +36,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/ingest/gdrive", post(ingest_gdrive))
         .route("/ingest/ytdlp", post(ingest_ytdlp))
+        .route("/ingest/ytdlp/completed", get(completed_ytdlp))
         .route("/search", get(search_ytdlp))
         .route("/jobs/{id}", get(get_job))
         .route("/internal/jobs/{id}", post(report_job))
@@ -616,6 +617,23 @@ async fn ingest_ytdlp(
     }
 
     Ok(Json(YtDlpIngestResponse { job_id, status: "accepted".into() }))
+}
+
+/// URLs this user has already ingested via yt-dlp (jobs in terminal `succeeded`
+/// state). The CLI diffs a playlist against this so a resumed run only submits
+/// tracks that never finished — without it, job dedup is in-flight only, so a
+/// re-run re-downloads and re-transcodes everything already done.
+async fn completed_ytdlp(
+    user: AuthUser,
+    State(st): State<AppState>,
+) -> ApiResult<Json<Vec<String>>> {
+    let prefix = format!("{}:", user.id);
+    let keys = st.queue.completed_keys(JobKind::YtDlpIngest, &prefix).await?;
+    let urls = keys
+        .into_iter()
+        .filter_map(|k| k.strip_prefix(&prefix).map(str::to_string))
+        .collect();
+    Ok(Json(urls))
 }
 
 #[derive(Serialize)]
