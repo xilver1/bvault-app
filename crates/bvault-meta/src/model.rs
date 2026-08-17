@@ -17,7 +17,6 @@ pub struct Track {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub added_at: DateTime<Utc>,
-    pub user_id: Option<Uuid>,
 }
 
 /// A registered user, minus anything secret. The `password_hash` never leaves

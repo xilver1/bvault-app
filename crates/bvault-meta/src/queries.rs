@@ -93,24 +93,36 @@ impl Meta {
         title: Option<&str>,
         artist: Option<&str>,
     ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        
         sqlx::query(
             r#"
-            insert into tracks (hash, raw_location, title, artist, user_id)
-            values ($1, $2, $3, $4, $5)
+            insert into tracks (hash, raw_location, title, artist)
+            values ($1, $2, $3, $4)
             on conflict (hash) do update
                 set raw_location = excluded.raw_location,
-                    title = excluded.title,
-                    artist = excluded.artist,
-                    user_id = coalesce(tracks.user_id, excluded.user_id)
+                    title = coalesce(excluded.title, tracks.title),
+                    artist = coalesce(excluded.artist, tracks.artist)
             "#,
         )
         .bind(hash)
         .bind(raw_location)
         .bind(title)
         .bind(artist)
-        .bind(user_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+
+        if let Some(uid) = user_id {
+            sqlx::query(
+                "insert into user_tracks (user_id, hash) values ($1, $2) on conflict do nothing"
+            )
+            .bind(uid)
+            .bind(hash)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
         Ok(())
     }
 
@@ -126,11 +138,12 @@ impl Meta {
     ) -> Result<Vec<Track>> {
         Ok(sqlx::query_as::<_, Track>(
             r#"
-            select hash, raw_location, title, artist, added_at, user_id
-            from tracks
-            where ($1::uuid is null or user_id = $1)
-              and ($4::text is null or title ilike '%' || $4 || '%')
-            order by added_at desc
+            select t.hash, t.raw_location, t.title, t.artist, ut.added_at
+            from tracks t
+            join user_tracks ut on t.hash = ut.hash
+            where ($1::uuid is null or ut.user_id = $1)
+              and ($4::text is null or t.title ilike '%' || $4 || '%')
+            order by ut.added_at desc
             limit $2 offset $3
             "#,
         )
