@@ -3,6 +3,10 @@ name = "bvault-cli"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "bvault"
+path = "src/main.rs"
+
 [dependencies]
 bvault-transfer = { path = "../bvault-transfer" }
 tokio.workspace = true
