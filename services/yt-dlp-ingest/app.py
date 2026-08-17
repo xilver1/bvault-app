@@ -86,26 +86,24 @@ def process_yt_dlp(url: str, user_id: str, job_id: int, target_gateway_url: str)
                 if not os.path.exists(mp3_filename):
                     raise RuntimeError(f"MP3 file was not created at {mp3_filename}")
 
-                with open(mp3_filename, "rb") as f:
-                    audio_bytes = f.read()
-
                 try:
-                    files = {
-                        "file": (os.path.basename(mp3_filename), audio_bytes, "audio/mpeg"),
-                        "title": (None, title),
-                        "artist": (None, artist),
-                    }
-                    headers = {"X-User-Id": user_id}
-                    if INTERNAL_API_KEY:
-                        headers["X-Internal-Key"] = INTERNAL_API_KEY
+                    with open(mp3_filename, "rb") as f:
+                        files = {
+                            "file": (os.path.basename(mp3_filename), f, "audio/mpeg"),
+                            "title": (None, title),
+                            "artist": (None, artist),
+                        }
+                        headers = {"X-User-Id": user_id}
+                        if INTERNAL_API_KEY:
+                            headers["X-Internal-Key"] = INTERNAL_API_KEY
 
-                    upload_url = f"{target_gateway_url.rstrip('/')}/ingest/upload"
-                    print(f"[yt-dlp-ingest] Uploading '{title}' to gateway...", flush=True)
-                    res = httpx.post(upload_url, files=files, headers=headers, timeout=60.0)
-                    if res.status_code >= 400:
-                        print(f"[yt-dlp-ingest] upload rejected {res.status_code}: {res.text}", flush=True)
-                    res.raise_for_status()
-                    print(f"[yt-dlp-ingest] Ingested '{title}' status: {res.status_code}", flush=True)
+                        upload_url = f"{target_gateway_url.rstrip('/')}/ingest/upload"
+                        print(f"[yt-dlp-ingest] Uploading '{title}' to gateway...", flush=True)
+                        res = httpx.post(upload_url, files=files, headers=headers, timeout=60.0)
+                        if res.status_code >= 400:
+                            print(f"[yt-dlp-ingest] upload rejected {res.status_code}: {res.text}", flush=True)
+                        res.raise_for_status()
+                        print(f"[yt-dlp-ingest] Ingested '{title}' status: {res.status_code}", flush=True)
                 finally:
                     if os.path.exists(mp3_filename):
                         os.remove(mp3_filename)
