@@ -20,5 +20,5 @@ pub fn load_session() -> Result<Session> {
 }
 
 pub fn get_api_url() -> String {
-    "http://gateway.beatvault.lan".to_string()
+    "http://192.168.0.200.nip.io".to_string()
 }
