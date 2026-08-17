@@ -567,7 +567,10 @@ async fn ingest_gdrive(
     State(st): State<AppState>,
     Json(req): Json<GDriveIngestRequest>,
 ) -> ApiResult<Json<GDriveIngestResponse>> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| GatewayError::Internal(format!("client err: {e}")))?;
     let q = format!("'{}' in parents and trashed = false", req.folder_id);
 
     let list_res: GDriveFileList = client
@@ -594,14 +597,27 @@ async fn ingest_gdrive(
             continue;
         }
 
-        let download_url = format!(
-            "https://www.googleapis.com/drive/v3/files/{}?alt=media&access_token={}",
-            file.id, req.access_token
-        );
-        let bytes_res = client
+        let mut download_url = format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", file.id);
+        let mut bytes_res = client
             .get(&download_url)
+            .bearer_auth(&req.access_token)
             .send()
             .await;
+
+        let mut redirects = 0;
+        while let Ok(r) = &bytes_res {
+            if r.status().is_redirection() && redirects < 5 {
+                if let Some(loc) = r.headers().get(reqwest::header::LOCATION) {
+                    if let Ok(loc_str) = loc.to_str() {
+                        download_url = loc_str.to_string();
+                        bytes_res = client.get(&download_url).bearer_auth(&req.access_token).send().await;
+                        redirects += 1;
+                        continue;
+                    }
+                }
+            }
+            break;
+        }
 
         let bytes = match bytes_res {
             Ok(resp) if resp.status().is_success() => match resp.bytes().await {
