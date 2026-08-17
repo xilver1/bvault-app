@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Query
 from pydantic import BaseModel
 import httpx
+import shutil, uuid
 import yt_dlp
 from yt_dlp.networking.impersonate import ImpersonateTarget
 from anyio import to_thread
@@ -14,9 +15,9 @@ app = FastAPI(title="BeatVault yt-dlp Ingestion Service")
 
 @app.on_event("startup")
 async def startup_event():
-    # Limit concurrent yt-dlp/ffmpeg jobs to 4 per pod to prevent CPU starvation and OOM kills.
+    # Limit concurrent yt-dlp/ffmpeg jobs to 2 per pod to prevent CPU starvation and OOM kills.
     limiter = to_thread.current_default_thread_limiter()
-    limiter.total_tokens = 4
+    limiter.total_tokens = 2
 
     # Pre-initialize yt-dlp to avoid thread race conditions during plugin registration.
     # Without this, multiple threads calling yt_dlp.YoutubeDL() concurrently will crash
@@ -54,10 +55,13 @@ def _report_job(job_id: int, user_id: str, gateway_url: str, ok: bool, error: Op
 
 def process_yt_dlp(url: str, user_id: str, job_id: int, target_gateway_url: str):
     for attempt in range(MAX_RETRIES + 1):
+        job_tmp = os.path.join(tempfile.gettempdir(), f"ytdlp-{job_id}-{uuid.uuid4().hex[:8]}")
+        os.makedirs(job_tmp, exist_ok=True)
         try:
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'outtmpl': os.path.join(tempfile.gettempdir(), '%(id)s.%(ext)s'),
+                'paths': {'home': job_tmp, 'temp': job_tmp},
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
@@ -113,18 +117,24 @@ def process_yt_dlp(url: str, user_id: str, job_id: int, target_gateway_url: str)
 
         except Exception as e:
             err_str = str(e)
-            if "Video unavailable" in err_str or "Private video" in err_str:
-                print(f"[yt-dlp-ingest] job {job_id} permanently failed (video unavailable): {e}", flush=True)
+            permanent = (
+                "Video unavailable" in err_str
+                or "Private video" in err_str
+                or "Sign in to confirm your age" in err_str
+            )
+            if permanent:
                 _report_job(job_id, user_id, target_gateway_url, ok=False, error=err_str)
                 return
 
             if attempt < MAX_RETRIES:
-                sleep_time = random.uniform(0, BASE_BACKOFF_SECONDS * (2 ** attempt))
+                sleep_time = random.uniform(0, min(120.0, BASE_BACKOFF_SECONDS * (2 ** attempt)))
                 print(f"[yt-dlp-ingest] job {job_id} failed on attempt {attempt + 1}/{MAX_RETRIES + 1}: {e}. Retrying in {sleep_time:.2f}s...", flush=True)
                 time.sleep(sleep_time)
             else:
                 print(f"[yt-dlp-ingest] job {job_id} permanently failed after {MAX_RETRIES + 1} attempts: {e}", flush=True)
                 _report_job(job_id, user_id, target_gateway_url, ok=False, error=err_str)
+        finally:
+            shutil.rmtree(job_tmp, ignore_errors=True)
 
 
 @app.get("/health")
