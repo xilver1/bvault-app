@@ -1,0 +1,13 @@
+[package]
+name = "bvault-manifest"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+# The serialized USB export contract, and nothing else. Deliberately serde-only
+# so the CLI/transfer can parse a manifest without pulling bvault-export ->
+# bvault-core -> rusqlite/SQLCipher/OpenSSL. bvault-export re-exports these types.
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
