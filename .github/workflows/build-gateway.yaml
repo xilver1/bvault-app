@@ -9,6 +9,7 @@ on:
       - "crates/bvault-meta/**"
       - "crates/bvault-store/**"
       - "crates/bvault-auth/**"
+      - "crates/bvault-hash/**"
       - "Cargo.toml"
       - "Cargo.lock"
 
