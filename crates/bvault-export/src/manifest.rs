@@ -1,10 +1,11 @@
-//! The build's input and its output manifest.
+//! The build's input types, plus a re-export of the serialized manifest.
 //!
-//! The manifest is the whole point of the split between build and transfer: it
-//! is the *plan* the reconcile loop converges the USB toward, so the transfer
-//! never has to parse the `.pdb` to know what the USB should contain.
+//! The manifest itself (`Manifest`/`ManifestEntry`/`Source`) now lives in the
+//! leaf `bvault-manifest` crate, so the CLI/transfer can parse it without
+//! pulling this crate (and SQLCipher/OpenSSL). It's re-exported here unchanged,
+//! so every server-side call site keeps using `bvault_export::Manifest` etc.
 
-use serde::{Deserialize, Serialize};
+pub use bvault_manifest::{Manifest, ManifestEntry, Source};
 
 /// Input to a build.
 pub struct ExportInput<'a> {
@@ -21,31 +22,4 @@ pub struct ExportInput<'a> {
 pub struct PlaylistInput {
     pub name: String,
     pub hashes: Vec<String>,
-}
-
-/// The full description of what the USB should contain — every file, and where
-/// its bytes come from.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Manifest {
-    pub entries: Vec<ManifestEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ManifestEntry {
-    /// USB-root-relative path with forward slashes, e.g. `Contents/ab12cd.flac`
-    /// or `PIONEER/rekordbox/export.pdb`.
-    pub usb_path: String,
-    pub size: u64,
-    pub source: Source,
-}
-
-/// Where an entry's bytes come from during transfer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Source {
-    /// A rendered file, present in the build's staging dir at `usb_path`.
-    Staging,
-    /// Streamed verbatim from the raw music store by content hash — never copied
-    /// into staging.
-    Raw { hash: String },
 }

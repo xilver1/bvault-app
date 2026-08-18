@@ -8,6 +8,7 @@ use tracing::error;
 
 pub enum ExportError {
     NotFound,
+    Unauthorized,
     BadRequest(String),
     Meta(bvault_meta::Error),
     Build(bvault_export::Error),
@@ -30,6 +31,7 @@ impl IntoResponse for ExportError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             ExportError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
+            ExportError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             ExportError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ExportError::Meta(e) => {
                 error!(error = %e, "metadata error");

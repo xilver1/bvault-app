@@ -11,6 +11,10 @@ path = "src/main.rs"
 bvault-export = { path = "../../crates/bvault-export" } # pulls core+device-library (OpenSSL) — confined to this image
 bvault-meta = { path = "../../crates/bvault-meta" }
 bvault-store = { path = "../../crates/bvault-store" }
+# Validates session tokens itself: the ingress routes /exports straight here,
+# so this service authenticates rather than trusting an upstream. Pure crate
+# (argon2/sha2) — no OpenSSL beyond what bvault-export already pulls.
+bvault-auth = { path = "../../crates/bvault-auth" }
 
 axum = "0.8"
 tokio = { workspace = true, features = ["time"] } # + timers for the sweeper

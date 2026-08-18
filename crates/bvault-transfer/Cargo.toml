@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 bvault-hash = { path = "../bvault-hash" }
-bvault-export = { path = "../bvault-export" }
+bvault-manifest = { path = "../bvault-manifest" }
 reqwest.workspace = true
 tokio.workspace = true
 serde.workspace = true

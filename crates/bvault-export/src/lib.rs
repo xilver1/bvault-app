@@ -37,17 +37,3 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // The tagged shape the phone will parse when resolving each manifest entry.
-    #[test]
-    fn source_serializes_tagged() {
-        let raw = serde_json::to_string(&Source::Raw { hash: "ab12".into() }).unwrap();
-        assert_eq!(raw, r#"{"kind":"raw","hash":"ab12"}"#);
-        let staged = serde_json::to_string(&Source::Staging).unwrap();
-        assert_eq!(staged, r#"{"kind":"staging"}"#);
-    }
-}

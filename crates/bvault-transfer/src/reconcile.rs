@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 use tracing::{info, warn, debug};
 
-use bvault_export::{Manifest, ManifestEntry, Source};
+use bvault_manifest::{Manifest, ManifestEntry, Source};
 
 pub trait TransferProgress: Send + Sync {
     fn on_start(&self, total_files: usize, total_bytes: u64);
