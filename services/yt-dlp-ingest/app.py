@@ -49,7 +49,7 @@ async def claim_worker_loop():
     async with httpx.AsyncClient(timeout=30.0) as client:
         while True:
             try:
-                res = await client.post(claim_url, json={"kind": "YtDlpIngest", "lease_secs": 600}, headers=headers)
+                res = await client.post(claim_url, json={"kind": "yt_dlp_ingest", "lease_secs": 600}, headers=headers)
                 if res.status_code == 204:
                     await asyncio.sleep(5)
                     continue
