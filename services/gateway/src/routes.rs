@@ -40,6 +40,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/search", get(search_ytdlp))
         .route("/jobs/{id}", get(get_job))
         .route("/internal/jobs/{id}", post(report_job))
+        .route("/internal/jobs/claim", post(claim_job))
         .with_state(state)
 }
 
@@ -87,6 +88,23 @@ impl FromRequestParts<AppState> for AuthUser {
             .ok_or(GatewayError::Unauthorized)?;
 
         Ok(AuthUser { id: user_id })
+    }
+}
+
+pub struct InternalAuth;
+
+impl FromRequestParts<AppState> for InternalAuth {
+    type Rejection = GatewayError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        if let Some(internal_key) = &state.config.internal_api_key {
+            if let Some(req_key) = parts.headers.get("x-internal-key").and_then(|v| v.to_str().ok()) {
+                if req_key == internal_key {
+                    return Ok(InternalAuth);
+                }
+            }
+        }
+        Err(GatewayError::Unauthorized)
     }
 }
 
@@ -693,7 +711,7 @@ async fn ingest_ytdlp(
     State(st): State<AppState>,
     Json(req): Json<YtDlpIngestRequest>,
 ) -> ApiResult<Json<YtDlpIngestResponse>> {
-    let service_url = st.config.yt_dlp_service_url.as_deref()
+    let _service_url = st.config.yt_dlp_service_url.as_deref()
         .ok_or_else(|| GatewayError::BadRequest("yt-dlp ingestion service is not configured".into()))?;
 
     // Record the run so the CLI can poll it. dedup on (user, url) collapses a
@@ -701,27 +719,6 @@ async fn ingest_ytdlp(
     let dedup_key = format!("{}:{}", user.id, req.url);
     let payload = YtDlpIngestJob { url: req.url.clone(), user_id: user.id.to_string() };
     let job_id = st.queue.enqueue(JobKind::YtDlpIngest, &dedup_key, &payload, 1).await?;
-
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({ "url": req.url, "user_id": user.id, "job_id": job_id });
-
-    let resp = client
-        .post(format!("{}/extract", service_url.trim_end_matches('/')))
-        .json(&body).send().await;
-
-    // If we can't even hand the work off, terminally fail the job so the CLI
-    // poll returns failure instead of spinning.
-    match resp {
-        Ok(r) if r.status().is_success() => {}
-        Ok(r) => {
-            let _ = st.queue.mark_dead(job_id, &format!("yt-dlp service returned {}", r.status())).await;
-            return Err(GatewayError::Internal("yt-dlp extraction job failed to start".into()));
-        }
-        Err(e) => {
-            let _ = st.queue.mark_dead(job_id, &format!("yt-dlp service unreachable: {e}")).await;
-            return Err(GatewayError::Internal(format!("yt-dlp service error: {e}")));
-        }
-    }
 
     Ok(Json(YtDlpIngestResponse { job_id, status: "accepted".into() }))
 }
@@ -793,6 +790,31 @@ async fn report_job(
 fn job_owned_by(job: &Job, user: &AuthUser) -> bool {
     job.payload.0.get("user_id").and_then(|v| v.as_str())
         == Some(user.id.to_string().as_str())
+}
+
+#[derive(Deserialize)]
+struct ClaimRequest {
+    kind: JobKind,
+    lease_secs: u64,
+}
+
+#[derive(Serialize)]
+struct ClaimResponse {
+    id: i64,
+    payload: serde_json::Value,
+}
+
+async fn claim_job(
+    _auth: InternalAuth,
+    State(st): State<AppState>,
+    Json(req): Json<ClaimRequest>,
+) -> ApiResult<axum::response::Response> {
+    use axum::response::IntoResponse;
+    if let Some(job) = st.queue.claim(req.kind, std::time::Duration::from_secs(req.lease_secs)).await? {
+        Ok(Json(ClaimResponse { id: job.id, payload: job.payload.0 }).into_response())
+    } else {
+        Ok(StatusCode::NO_CONTENT.into_response())
+    }
 }
 
 async fn search_ytdlp(

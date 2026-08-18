@@ -2,6 +2,7 @@ import os
 import tempfile
 import time
 import random
+import asyncio
 from typing import Optional
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Query
 from pydantic import BaseModel
@@ -28,17 +29,47 @@ async def startup_event():
     except Exception as e:
         print(f"[startup] yt-dlp pre-init failed: {e}")
 
+    # Start 2 concurrent claim loops to match the thread limiter
+    for _ in range(limiter.total_tokens):
+        asyncio.create_task(claim_worker_loop())
+
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://gateway.bvault-prod.svc.cluster.local:8080")
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "")
 POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://127.0.0.1:4416")
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "10"))
 BASE_BACKOFF_SECONDS = float(os.getenv("BASE_BACKOFF_SECONDS", "10.0"))
 
-class ExtractRequest(BaseModel):
-    url: str
-    user_id: str
-    job_id: int
-    gateway_url: Optional[str] = None
+async def claim_worker_loop():
+    print("[yt-dlp-ingest] worker loop started", flush=True)
+    claim_url = f"{GATEWAY_URL.rstrip('/')}/internal/jobs/claim"
+    headers = {}
+    if INTERNAL_API_KEY:
+        headers["X-Internal-Key"] = INTERNAL_API_KEY
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        while True:
+            try:
+                res = await client.post(claim_url, json={"kind": "YtDlpIngest", "lease_secs": 600}, headers=headers)
+                if res.status_code == 204:
+                    await asyncio.sleep(5)
+                    continue
+
+                res.raise_for_status()
+                job = res.json()
+                
+                url = job["payload"]["url"]
+                user_id = job["payload"]["user_id"]
+                job_id = job["id"]
+
+                # Process the job via threadpool
+                await to_thread.run_sync(process_yt_dlp, url, user_id, job_id, GATEWAY_URL)
+                
+            except httpx.HTTPError as e:
+                print(f"[yt-dlp-ingest] http error claiming job: {e}", flush=True)
+                await asyncio.sleep(5)
+            except Exception as e:
+                print(f"[yt-dlp-ingest] unexpected error in worker loop: {e}", flush=True)
+                await asyncio.sleep(5)
 
 
 def _report_job(job_id: int, user_id: str, gateway_url: str, ok: bool, error: Optional[str] = None):
@@ -140,13 +171,6 @@ def process_yt_dlp(url: str, user_id: str, job_id: int, target_gateway_url: str)
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
-
-@app.post("/extract")
-async def extract_audio(req: ExtractRequest, background_tasks: BackgroundTasks):
-    target_url = req.gateway_url or GATEWAY_URL
-    background_tasks.add_task(process_yt_dlp, req.url, req.user_id, req.job_id, target_url)
-    return {"status": "accepted", "job_id": req.job_id}
 
 
 @app.get("/search")
