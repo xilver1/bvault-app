@@ -92,7 +92,7 @@ def process_yt_dlp(url: str, user_id: str, job_id: int, target_gateway_url: str)
         client_mixes = [
             ['web_embedded', 'default', 'mweb', 'web'],
             ['mweb', 'web_embedded', 'default', 'android'],
-            ['default', 'web_creator', 'web_embedded', 'web'],
+            ['default', 'web_embedded', 'web', 'mweb'],
             ['ios', 'web_embedded', 'default', 'tv'],
             ['android', 'ios', 'web_embedded', 'default']
         ]
