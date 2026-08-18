@@ -12,6 +12,7 @@ mod ingest;
 mod library;
 mod playlist;
 mod status;
+mod download;
 
 #[derive(Parser)]
 #[command(name = "bvault")]
@@ -67,6 +68,17 @@ enum Commands {
         usb: bool,
         #[arg(long, conflicts_with = "usb")]
         path: Option<String>,
+    },
+    /// Download raw audio files
+    Download {
+        /// Playlist name or comma-separated track names
+        query: String,
+        /// Whether the query is a playlist name
+        #[arg(long)]
+        playlist: bool,
+        /// Output directory
+        #[arg(long, default_value = ".")]
+        out: String,
     },
 }
 
@@ -132,6 +144,9 @@ async fn main() -> Result<()> {
         }
         Commands::Export { playlist_name, usb, path } => {
             export::run_export_flow(playlist_name, *usb, path.clone()).await?;
+        }
+        Commands::Download { query, playlist, out } => {
+            download::run_download_flow(query, *playlist, out).await?;
         }
     }
 

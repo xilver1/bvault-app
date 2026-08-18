@@ -17,6 +17,7 @@ bvault-hash = { path = "../../crates/bvault-hash" }
 axum = { version = "0.8", features = ["multipart"] }
 # Current-thread runtime (see main.rs). Workspace tokio already has rt/net/macros.
 tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["io"] }
 # The gateway owns migrations, hence `migrate`. Row-type features (chrono/uuid/
 # json/macros) come transitively from jobs/meta via Cargo feature unification.
 sqlx = { version = "0.8", default-features = false, features = [

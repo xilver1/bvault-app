@@ -3,9 +3,12 @@ use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use axum::body::Body;
+use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use tokio_util::io::ReaderStream;
 
 use bvault_jobs::{AnalysisJob, Job, JobKind, JobStatus, YtDlpIngestJob};
 use bvault_meta::{Playlist, SearchResult};
@@ -25,6 +28,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
         .route("/tracks", get(list_tracks).post(register_track))
+        .route("/tracks/{hash}/raw", get(download_track_raw))
         .route("/playlists", get(list_playlists).post(create_playlist))
         .route("/playlists/{id}", get(get_playlist).delete(delete_playlist_endpoint))
         .route("/playlists/{id}/hashes", get(playlist_hashes))
@@ -322,6 +326,32 @@ async fn register_track(
         .upsert_track(Some(user.id), &t.hash, &t.raw_location, t.title.as_deref(), t.artist.as_deref())
         .await?;
     Ok(Json(serde_json::json!({ "hash": t.hash })))
+}
+
+async fn download_track_raw(
+    user: AuthUser,
+    State(st): State<AppState>,
+    Path(hash): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let track = st
+        .meta
+        .get_track_by_hash(Some(user.id), &hash)
+        .await?
+        .ok_or(GatewayError::NotFound)?;
+
+    let path = st.raw.resolve(&track.raw_location).map_err(|e| GatewayError::Internal(e.to_string()))?;
+    let file = tokio::fs::File::open(&path).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
+    
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    Ok((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/octet-stream",
+        )],
+        body,
+    ))
 }
 
 // ---- playlists ----------------------------------------------------------

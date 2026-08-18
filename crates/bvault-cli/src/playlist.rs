@@ -8,28 +8,28 @@ use chrono::{DateTime, Utc};
 use crate::client::{get_api_url, load_session};
 
 #[derive(Deserialize)]
-struct Track {
-    hash: String,
-    title: Option<String>,
-    artist: Option<String>,
+pub struct Track {
+    pub hash: String,
+    pub title: Option<String>,
+    pub artist: Option<String>,
 }
 
 #[derive(Deserialize)]
-struct Playlist {
-    id: String,
-    name: String,
-    description: Option<String>,
-    created_at: DateTime<Utc>,
+pub struct Playlist {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: DateTime<Utc>,
 }
 
-fn clean_string(s: &str) -> String {
+pub fn clean_string(s: &str) -> String {
     s.to_lowercase()
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { ' ' })
         .collect()
 }
 
-fn fuzzy_token_score(query: &str, target: &str) -> f64 {
+pub fn fuzzy_token_score(query: &str, target: &str) -> f64 {
     let q_words: Vec<&str> = query.split_whitespace().collect();
     let t_words: Vec<&str> = target.split_whitespace().collect();
 
@@ -56,7 +56,7 @@ fn fuzzy_token_score(query: &str, target: &str) -> f64 {
     total_score / (q_words.len() as f64)
 }
 
-async fn fetch_playlist_by_name(client: &Client, base_url: &str, token: &str, name: &str) -> Result<Option<Playlist>> {
+pub async fn fetch_playlist_by_name(client: &Client, base_url: &str, token: &str, name: &str) -> Result<Option<Playlist>> {
     let playlists: Vec<Playlist> = client
         .get(&format!("{}/playlists", base_url))
         .header("Authorization", format!("Bearer {}", token))

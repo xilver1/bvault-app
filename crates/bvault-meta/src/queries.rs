@@ -266,6 +266,21 @@ impl Meta {
         Ok(rows.into_iter().map(|(h,)| h).collect())
     }
 
+    pub async fn get_track_by_hash(&self, user_id: Option<Uuid>, hash: &str) -> Result<Option<Track>> {
+        Ok(sqlx::query_as::<_, Track>(
+            r#"
+            select t.hash, t.raw_location, t.title, t.artist, ut.added_at
+            from tracks t
+            join user_tracks ut on t.hash = ut.hash
+            where t.hash = $1 and ($2::uuid is null or ut.user_id = $2)
+            "#,
+        )
+        .bind(hash)
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
     pub async fn resolve_hashes(&self, user_id: Option<Uuid>, playlist_ids: &[Uuid]) -> Result<Vec<(String, String)>> {
         Ok(sqlx::query_as::<_, (String, String)>(
             r#"
