@@ -90,11 +90,11 @@ def process_yt_dlp(url: str, user_id: str, job_id: int, target_gateway_url: str)
         os.makedirs(job_tmp, exist_ok=True)
         
         client_mixes = [
-            ['web_embedded', 'default', 'ios'],
-            ['ios', 'web_embedded', 'default'],
-            ['default', 'ios', 'web_embedded'],
-            ['android', 'web_embedded', 'default'],
-            ['tv', 'web_embedded', 'ios']
+            ['web_embedded', 'default', 'mweb', 'web'],
+            ['mweb', 'web_embedded', 'default', 'android'],
+            ['default', 'web_creator', 'web_embedded', 'web'],
+            ['ios', 'web_embedded', 'default', 'tv'],
+            ['android', 'ios', 'web_embedded', 'default']
         ]
         chosen_clients = random.choice(client_mixes)
         
