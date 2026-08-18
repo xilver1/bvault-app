@@ -6,7 +6,7 @@ use tokio::io::AsyncWriteExt;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::client::{get_api_url, load_session};
-use crate::playlist::{fetch_playlist_by_name, Track, clean_string, fuzzy_token_score};
+use crate::playlist::{fetch_playlist_by_name, Track};
 use dialoguer::{theme::ColorfulTheme, Select};
 
 pub async fn run_download_flow(query: &str, is_playlist: bool, out_dir: &str) -> Result<()> {
@@ -21,13 +21,7 @@ pub async fn run_download_flow(query: &str, is_playlist: bool, out_dir: &str) ->
 
     let mut tracks_to_download = Vec::new(); // (hash, title)
 
-    let all_tracks: Vec<Track> = http
-        .get(&format!("{}/tracks", base_url))
-        .header("Authorization", format!("Bearer {}", session.token))
-        .send()
-        .await?
-        .json()
-        .await?;
+    // all_tracks no longer fetched upfront for non-playlist flow
 
     if is_playlist {
         let playlist = fetch_playlist_by_name(&http, &base_url, &session.token, query).await?
@@ -36,6 +30,15 @@ pub async fn run_download_flow(query: &str, is_playlist: bool, out_dir: &str) ->
         let playlist_hashes: Vec<String> = http
             .get(&format!("{}/playlists/{}/hashes", base_url, playlist.id))
             .header("Authorization", format!("Bearer {}", session.token))
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        let all_tracks: Vec<Track> = http
+            .get(&format!("{}/tracks", base_url))
+            .header("Authorization", format!("Bearer {}", session.token))
+            .query(&[("limit", "100000")]) // Fetch all tracks to match playlist hashes
             .send()
             .await?
             .json()
@@ -57,39 +60,27 @@ pub async fn run_download_flow(query: &str, is_playlist: bool, out_dir: &str) ->
     } else {
         let queries: Vec<&str> = query.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
         for q in queries {
-            let q_clean = clean_string(q);
-            let mut scored_tracks: Vec<(f64, &Track)> = all_tracks.iter().map(|t| {
-                let title = t.title.as_deref().unwrap_or("");
-                let artist = t.artist.as_deref().unwrap_or("");
-                let target = format!("{} {}", artist, title);
-                let t_clean = clean_string(&target);
-                let score = fuzzy_token_score(&q_clean, &t_clean);
-                (score, t)
-            }).collect();
+            let res = http
+                .get(&format!("{}/tracks", base_url))
+                .header("Authorization", format!("Bearer {}", session.token))
+                .query(&[("limit", "10"), ("q", q)])
+                .send()
+                .await?;
+            let mut search_results: Vec<Track> = res.json().await?;
 
-            scored_tracks.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-
-            if scored_tracks.is_empty() {
+            if search_results.is_empty() {
                 println!("✗ No tracks in library to match query: {}", q);
                 continue;
             }
 
-            let (best_score, best_track) = scored_tracks[0];
-            let mut selected_track = None;
-
-            if best_score >= 0.99 {
-                selected_track = Some(best_track);
+            let selected_track = if search_results.len() == 1 {
+                Some(search_results.remove(0))
             } else {
-                let top_candidates: Vec<_> = scored_tracks.into_iter().filter(|(s, _)| *s > 0.4).take(5).collect();
-                if top_candidates.is_empty() {
-                    println!("✗ No good match found for query: {}", q);
-                    continue;
-                }
-
+                let top_candidates = search_results.into_iter().take(5).collect::<Vec<_>>();
                 println!("? Found multiple partial matches for '{}':", q);
                 let mut items = vec![];
-                for (s, t) in &top_candidates {
-                    items.push(format!("[{:.0}%] {} - {}", s * 100.0, t.artist.as_deref().unwrap_or("Unknown"), t.title.as_deref().unwrap_or("Unknown")));
+                for t in &top_candidates {
+                    items.push(format!("{} - {}", t.artist.as_deref().unwrap_or("Unknown"), t.title.as_deref().unwrap_or("Unknown")));
                 }
                 items.push("Skip".to_string());
 
@@ -100,16 +91,17 @@ pub async fn run_download_flow(query: &str, is_playlist: bool, out_dir: &str) ->
                     .interact()?;
 
                 if selection < top_candidates.len() {
-                    selected_track = Some(top_candidates[selection].1);
+                    Some(top_candidates.into_iter().nth(selection).unwrap())
                 } else {
                     println!("- Skipped query: {}", q);
+                    None
                 }
-            }
+            };
 
             if let Some(t) = selected_track {
                 let title = format!("{} - {}", t.artist.as_deref().unwrap_or("Unknown"), t.title.as_deref().unwrap_or("Unknown"));
                 let safe_title = title.replace(&['/', '\\', ':', '*', '?', '"', '<', '>', '|'][..], "_");
-                tracks_to_download.push((t.hash.clone(), safe_title));
+                tracks_to_download.push((t.hash, safe_title));
             }
         }
         

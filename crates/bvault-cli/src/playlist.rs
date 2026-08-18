@@ -22,40 +22,6 @@ pub struct Playlist {
     pub created_at: DateTime<Utc>,
 }
 
-pub fn clean_string(s: &str) -> String {
-    s.to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
-        .collect()
-}
-
-pub fn fuzzy_token_score(query: &str, target: &str) -> f64 {
-    let q_words: Vec<&str> = query.split_whitespace().collect();
-    let t_words: Vec<&str> = target.split_whitespace().collect();
-
-    if q_words.is_empty() || t_words.is_empty() {
-        return 0.0;
-    }
-
-    let mut total_score = 0.0;
-    for qw in &q_words {
-        let mut best_word_score = 0.0;
-        for tw in &t_words {
-            let score = if tw.contains(qw) {
-                1.0
-            } else {
-                strsim::jaro_winkler(qw, tw)
-            };
-            if score > best_word_score {
-                best_word_score = score;
-            }
-        }
-        total_score += best_word_score;
-    }
-
-    total_score / (q_words.len() as f64)
-}
-
 pub async fn fetch_playlist_by_name(client: &Client, base_url: &str, token: &str, name: &str) -> Result<Option<Playlist>> {
     let playlists: Vec<Playlist> = client
         .get(&format!("{}/playlists", base_url))
@@ -178,68 +144,52 @@ pub async fn run_playlist_add_flow(name: &str, add: &Option<String>) -> Result<(
     let mut hashes = Vec::new();
 
     if let Some(add_str) = add {
-        let tracks: Vec<Track> = http
-            .get(&format!("{}/tracks", base_url))
-            .header("Authorization", format!("Bearer {}", session.token))
-            .send()
-            .await?
-            .json()
-            .await?;
-
         let queries: Vec<&str> = add_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
         for q in queries {
-            let q_clean = clean_string(q);
-            
-            let mut scored_tracks: Vec<(f64, &Track)> = tracks.iter().map(|t| {
-                let title = t.title.as_deref().unwrap_or("");
-                let artist = t.artist.as_deref().unwrap_or("");
-                let target = format!("{} {}", artist, title);
-                let t_clean = clean_string(&target);
-                
-                let score = fuzzy_token_score(&q_clean, &t_clean);
-                (score, t)
-            }).collect();
-            
-            scored_tracks.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-            
-            if scored_tracks.is_empty() {
+            let res = http
+                .get(&format!("{}/tracks", base_url))
+                .header("Authorization", format!("Bearer {}", session.token))
+                .query(&[("limit", "10"), ("q", q)])
+                .send()
+                .await?;
+            let mut search_results: Vec<Track> = res.json().await?;
+
+            if search_results.is_empty() {
                 println!("✗ No tracks in library to match query: {}", q);
                 continue;
             }
-            
-            let (best_score, best_track) = scored_tracks[0];
-            
-            if best_score >= 0.99 {
-                hashes.push(best_track.hash.clone());
-                println!("✓ Added (100%): {} - {}", best_track.artist.as_deref().unwrap_or("Unknown"), best_track.title.as_deref().unwrap_or("Unknown"));
+
+            let selected_track = if search_results.len() == 1 {
+                let t = search_results.remove(0);
+                println!("✓ Added: {} - {}", t.artist.as_deref().unwrap_or("Unknown"), t.title.as_deref().unwrap_or("Unknown"));
+                Some(t)
             } else {
-                let top_candidates: Vec<_> = scored_tracks.into_iter().filter(|(s, _)| *s > 0.4).take(5).collect();
-                
-                if top_candidates.is_empty() {
-                    println!("✗ No good match found for query: {}", q);
-                    continue;
-                }
-                
-                println!("? Found multiple partial matches for '{}':", q);
+                let top_candidates = search_results.into_iter().take(5).collect::<Vec<_>>();
+                println!("? Found multiple matches for '{}':", q);
                 let mut items = vec![];
-                for (s, t) in &top_candidates {
-                    items.push(format!("[{:.0}%] {} - {}", s * 100.0, t.artist.as_deref().unwrap_or("Unknown"), t.title.as_deref().unwrap_or("Unknown")));
+                for t in &top_candidates {
+                    items.push(format!("{} - {}", t.artist.as_deref().unwrap_or("Unknown"), t.title.as_deref().unwrap_or("Unknown")));
                 }
                 items.push("Skip".to_string());
-                
+
                 let selection = Select::with_theme(&ColorfulTheme::default())
                     .with_prompt("Select track to add")
                     .default(0)
                     .items(&items)
                     .interact()?;
-                    
+
                 if selection < top_candidates.len() {
-                    let selected_track = top_candidates[selection].1;
-                    hashes.push(selected_track.hash.clone());
+                    let selected_track = top_candidates.into_iter().nth(selection).unwrap();
                     println!("✓ Added: {} - {}", selected_track.artist.as_deref().unwrap_or("Unknown"), selected_track.title.as_deref().unwrap_or("Unknown"));
+                    Some(selected_track)
                 } else {
                     println!("- Skipped query: {}", q);
+                    None
                 }
+            };
+
+            if let Some(t) = selected_track {
+                hashes.push(t.hash);
             }
         }
     }
@@ -298,41 +248,32 @@ pub async fn run_playlist_remove_flow(name: &str, tracks_str: &str) -> Result<()
     let queries: Vec<&str> = tracks_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
     
     for q in queries {
-        let q_clean = clean_string(q);
+        let q_clean = q.to_lowercase();
         
-        let mut scored_tracks: Vec<(f64, &&Track)> = playlist_tracks.iter().map(|t| {
-            let title = t.title.as_deref().unwrap_or("");
-            let artist = t.artist.as_deref().unwrap_or("");
-            let target = format!("{} {}", artist, title);
-            let t_clean = clean_string(&target);
-            let score = fuzzy_token_score(&q_clean, &t_clean);
-            (score, t)
-        }).collect();
+        let matches: Vec<&Track> = playlist_tracks.iter().copied()
+            .filter(|t| {
+                let title = t.title.as_deref().unwrap_or("").to_lowercase();
+                let artist = t.artist.as_deref().unwrap_or("").to_lowercase();
+                title.contains(&q_clean) || artist.contains(&q_clean)
+            })
+            .collect();
         
-        scored_tracks.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        
-        if scored_tracks.is_empty() {
+        if matches.is_empty() {
             println!("✗ No tracks in playlist to match query: {}", q);
             continue;
         }
         
-        let (best_score, best_track) = scored_tracks[0];
-        
-        if best_score >= 0.99 {
+        if matches.len() == 1 {
+            let best_track = matches[0];
             hashes_to_remove.push(best_track.hash.clone());
-            println!("✓ Selected for removal (100%): {} - {}", best_track.artist.as_deref().unwrap_or("Unknown"), best_track.title.as_deref().unwrap_or("Unknown"));
+            println!("✓ Selected for removal: {} - {}", best_track.artist.as_deref().unwrap_or("Unknown"), best_track.title.as_deref().unwrap_or("Unknown"));
         } else {
-            let top_candidates: Vec<_> = scored_tracks.into_iter().filter(|(s, _)| *s > 0.4).take(5).collect();
+            let top_candidates = matches.into_iter().take(5).collect::<Vec<_>>();
             
-            if top_candidates.is_empty() {
-                println!("✗ No good match found in playlist for query: {}", q);
-                continue;
-            }
-            
-            println!("? Found multiple partial matches in playlist for '{}':", q);
+            println!("? Found multiple matches in playlist for '{}':", q);
             let mut items = vec![];
-            for (s, t) in &top_candidates {
-                items.push(format!("[{:.0}%] {} - {}", s * 100.0, t.artist.as_deref().unwrap_or("Unknown"), t.title.as_deref().unwrap_or("Unknown")));
+            for t in &top_candidates {
+                items.push(format!("{} - {}", t.artist.as_deref().unwrap_or("Unknown"), t.title.as_deref().unwrap_or("Unknown")));
             }
             items.push("Skip".to_string());
             
@@ -343,7 +284,7 @@ pub async fn run_playlist_remove_flow(name: &str, tracks_str: &str) -> Result<()
                 .interact()?;
                 
             if selection < top_candidates.len() {
-                let selected_track = top_candidates[selection].1;
+                let selected_track = top_candidates[selection];
                 hashes_to_remove.push(selected_track.hash.clone());
                 println!("✓ Selected for removal: {} - {}", selected_track.artist.as_deref().unwrap_or("Unknown"), selected_track.title.as_deref().unwrap_or("Unknown"));
             } else {
