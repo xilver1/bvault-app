@@ -20,6 +20,7 @@ const MAX_UPLOAD_BYTES: usize = 200 * 1024 * 1024; // 200 MiB
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/status", get(get_status))
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
@@ -46,6 +47,37 @@ pub fn build_router(state: AppState) -> Router {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+#[derive(Serialize)]
+struct QueueStatus {
+    kind: JobKind,
+    status: JobStatus,
+    count: i64,
+}
+
+#[derive(Serialize)]
+struct StatusResponse {
+    jobs: Vec<QueueStatus>,
+}
+
+async fn get_status(
+    _user: AuthUser,
+    State(st): State<AppState>,
+) -> ApiResult<Json<StatusResponse>> {
+    let mut jobs = Vec::new();
+    
+    let analysis_counts = st.queue.counts(JobKind::Analysis).await?;
+    for (status, count) in analysis_counts {
+        jobs.push(QueueStatus { kind: JobKind::Analysis, status, count });
+    }
+    
+    let ytdlp_counts = st.queue.counts(JobKind::YtDlpIngest).await?;
+    for (status, count) in ytdlp_counts {
+        jobs.push(QueueStatus { kind: JobKind::YtDlpIngest, status, count });
+    }
+    
+    Ok(Json(StatusResponse { jobs }))
 }
 
 // ---- auth extractor & handlers ------------------------------------------

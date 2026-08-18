@@ -11,6 +11,7 @@ mod register;
 mod ingest;
 mod library;
 mod playlist;
+mod status;
 
 #[derive(Parser)]
 #[command(name = "bvault")]
@@ -28,6 +29,8 @@ enum Commands {
     Logout,
     /// Register a new account
     Register,
+    /// Check background job status
+    Status,
     /// Ingest a track (YouTube)
     Ingest {
         #[arg(required_unless_present = "youtube_sso")]
@@ -98,6 +101,9 @@ async fn main() -> Result<()> {
         }
         Commands::Register => {
             register::run_register_flow().await?;
+        }
+        Commands::Status => {
+            status::run_status_flow().await?;
         }
         Commands::Ingest { query, youtube, local, gdrive, youtube_sso, youtube_playlist, playlists } => {
             ingest::run_ingest_flow(query.as_deref(), *youtube, *local, *gdrive, *youtube_sso, *youtube_playlist, *playlists).await?;

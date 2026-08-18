@@ -88,8 +88,19 @@ def process_yt_dlp(url: str, user_id: str, job_id: int, target_gateway_url: str)
     for attempt in range(MAX_RETRIES + 1):
         job_tmp = os.path.join(tempfile.gettempdir(), f"ytdlp-{job_id}-{uuid.uuid4().hex[:8]}")
         os.makedirs(job_tmp, exist_ok=True)
+        
+        client_mixes = [
+            ['web_embedded', 'default', 'ios'],
+            ['ios', 'web_embedded', 'default'],
+            ['default', 'ios', 'web_embedded'],
+            ['android', 'web_embedded', 'default'],
+            ['tv', 'web_embedded', 'ios']
+        ]
+        chosen_clients = random.choice(client_mixes)
+        
         try:
             ydl_opts = {
+                'force_ipv4': True,  # Fix for IPv6 data-center 403 bans
                 'format': 'bestaudio/best',
                 'outtmpl': os.path.join(tempfile.gettempdir(), '%(id)s.%(ext)s'),
                 'paths': {'home': job_tmp, 'temp': job_tmp},
@@ -98,8 +109,9 @@ def process_yt_dlp(url: str, user_id: str, job_id: int, target_gateway_url: str)
                     'preferredcodec': 'mp3',
                     'preferredquality': '320',
                 }],
-                'quiet': True,
-                'no_warnings': True,
+                'quiet': False,
+                'no_warnings': False,
+                'verbose': True,
                 # Library API needs an ImpersonateTarget object, not a bare string
                 # (the --impersonate CLI flag does this conversion for you).
                 'impersonate': ImpersonateTarget.from_str('chrome'),
@@ -107,6 +119,7 @@ def process_yt_dlp(url: str, user_id: str, job_id: int, target_gateway_url: str)
                 # the media download (this is the fix for the 403). base_url matches
                 # the plugin default, set explicitly so it's greppable + overridable.
                 'extractor_args': {
+                    'youtube': {'player_client': chosen_clients},
                     'youtubepot-bgutilhttp': {'base_url': [POT_PROVIDER_URL]},
                 },
             }
@@ -152,6 +165,7 @@ def process_yt_dlp(url: str, user_id: str, job_id: int, target_gateway_url: str)
                 "Video unavailable" in err_str
                 or "Private video" in err_str
                 or "Sign in to confirm your age" in err_str
+                or "Sign in to confirm you're not a bot" in err_str
             )
             if permanent:
                 _report_job(job_id, user_id, target_gateway_url, ok=False, error=err_str)
