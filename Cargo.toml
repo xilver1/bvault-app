@@ -24,7 +24,7 @@ edition = "2021"
 authors = ["bvault contributors"]
 license = "MIT"
 repository = "https://github.com/xilver1/bvault"
-# Unnecessary comment
+
 [workspace.dependencies]
 # Binary serialization
 binrw = "0.14"
@@ -72,7 +72,6 @@ sysinfo = "0.30"
 dirs = "5.0"
 comfy-table = "7.1"
 strsim = "0.11"
-
 
 [profile.release]
 opt-level = 3
