@@ -20,7 +20,7 @@ The compiled binary will be located in `target/release/bvault`.
 - **`bvault register`**: Interactively register a new account on the BeatVault server.
 
 #### Ingestion
-BeatVault supports multiple ingestion paths. Newly ingested tracks are automatically queued for background analysis (FFT, waveforms, beatgrids).
+BeatVault supports multiple ingestion paths. Newly ingested tracks are automatically queued for background analysis (FFT, waveforms, beatgrids). All ingest commands support the `--bg` flag to queue the jobs in the background without waiting.
 - **`bvault ingest <query> --youtube`**: Download and extract audio from a single YouTube URL.
 - **`bvault ingest <query> --youtube-playlist`**: Ingest an entire YouTube playlist.
 - **`bvault ingest --youtube-sso`**: Interactive YouTube single sign-on flow for authenticated downloads.
@@ -44,3 +44,12 @@ BeatVault supports multiple ingestion paths. Newly ingested tracks are automatic
 - **`bvault export <playlist_name> --path <path>`**: Export the database, tracks, and analysis files to a specific local directory instead of auto-detecting a USB.
 
 *Note: Currently, the CLI `export` command only supports exporting a single playlist at a time. Exporting a new playlist to a USB will overwrite its previous `export.pdb` database.*
+
+#### Downloading
+- **`bvault download "<playlist_name>" --playlist --out <dir>`**: Download all raw MP3/FLAC files from a playlist into a local directory.
+- **`bvault download "<track_name1>, <track_name2>"`**: Download specific tracks (comma-separated list) to your current directory using fuzzy search.
+
+#### Background Jobs
+- **`bvault status`**: Show aggregate background job status across all queues.
+- **`bvault status ingest`**: Monitor the live progress of your last background ingest run.
+- **`bvault status analysis`**: Monitor the live progress of the global analysis queue.

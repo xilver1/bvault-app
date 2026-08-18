@@ -9,9 +9,14 @@ pub struct Session {
     pub user_id: Uuid,
 }
 
-pub fn load_session() -> Result<Session> {
+pub fn get_config_dir() -> std::path::PathBuf {
     let mut path = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
     path.push("bvault");
+    path
+}
+
+pub fn load_session() -> Result<Session> {
+    let mut path = get_config_dir();
     path.push("session.json");
     
     let content = fs::read_to_string(path)?;

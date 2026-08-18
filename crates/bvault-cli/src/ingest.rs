@@ -11,7 +11,8 @@ use oauth2::{
 };
 use tiny_http::{Response, Server};
 
-use crate::client::{get_api_url, load_session};
+use crate::client::{get_api_url, load_session, get_config_dir};
+use std::fs;
 
 #[derive(Deserialize)]
 struct SearchResult {
@@ -90,7 +91,7 @@ struct YTResourceId {
     video_id: String,
 }
 
-pub async fn run_ingest_flow(query: Option<&str>, youtube: bool, local: bool, gdrive: bool, youtube_sso: bool, youtube_playlist: bool, playlists: bool) -> Result<()> {
+pub async fn run_ingest_flow(query: Option<&str>, youtube: bool, local: bool, gdrive: bool, youtube_sso: bool, youtube_playlist: bool, playlists: bool, bg: bool) -> Result<()> {
     let query_str = query.unwrap_or_default();
     let session = load_session().context("You are not logged in. Please run `bvault login` first.")?;
     let base_url = get_api_url();
@@ -239,6 +240,18 @@ pub async fn run_ingest_flow(query: Option<&str>, youtube: bool, local: bool, gd
             pb_submit.inc(1);
         }
         pb_submit.finish_with_message("All jobs submitted.");
+
+        if bg {
+            let mut state_path = get_config_dir();
+            state_path.push("last_ingest.json");
+            let state_json = serde_json::json!({
+                "job_ids": job_ids,
+            });
+            fs::write(&state_path, serde_json::to_string(&state_json)?)?;
+            println!("Ingest jobs queued in background.");
+            println!("Run `bvault status ingest` to monitor progress.");
+            return Ok(());
+        }
 
         println!("Waiting for {} background jobs to complete...", job_ids.len());
         let pb_batch = indicatif::ProgressBar::new(job_ids.len() as u64);

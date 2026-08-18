@@ -31,7 +31,10 @@ enum Commands {
     /// Register a new account
     Register,
     /// Check background job status
-    Status,
+    Status {
+        #[command(subcommand)]
+        command: Option<StatusCommands>,
+    },
     /// Ingest a track (YouTube)
     Ingest {
         #[arg(required_unless_present = "youtube_sso")]
@@ -49,6 +52,9 @@ enum Commands {
         /// For --local on a directory: make each top-level subfolder a playlist.
         #[arg(long, requires = "local")]
         playlists: bool,
+        /// Do not wait for jobs to finish, queue them in the background
+        #[arg(long)]
+        bg: bool,
     },
     /// List library (optionally filter by title)
     Library {
@@ -96,6 +102,14 @@ enum PlaylistCommands {
     Delete { name: String },
 }
 
+#[derive(Subcommand)]
+pub enum StatusCommands {
+    /// Monitor ingest queue progress
+    Ingest,
+    /// Monitor analysis queue progress
+    Analysis,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -114,11 +128,11 @@ async fn main() -> Result<()> {
         Commands::Register => {
             register::run_register_flow().await?;
         }
-        Commands::Status => {
-            status::run_status_flow().await?;
+        Commands::Status { command } => {
+            status::run_status_flow(command.as_ref()).await?;
         }
-        Commands::Ingest { query, youtube, local, gdrive, youtube_sso, youtube_playlist, playlists } => {
-            ingest::run_ingest_flow(query.as_deref(), *youtube, *local, *gdrive, *youtube_sso, *youtube_playlist, *playlists).await?;
+        Commands::Ingest { query, youtube, local, gdrive, youtube_sso, youtube_playlist, playlists, bg } => {
+            ingest::run_ingest_flow(query.as_deref(), *youtube, *local, *gdrive, *youtube_sso, *youtube_playlist, *playlists, *bg).await?;
         }
         Commands::Library { search } => {
             library::run_library_flow(search.as_deref()).await?;
