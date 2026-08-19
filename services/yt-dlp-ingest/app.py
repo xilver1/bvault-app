@@ -45,40 +45,44 @@ async def claim_worker_loop():
     if INTERNAL_API_KEY:
         headers["X-Internal-Key"] = INTERNAL_API_KEY
 
-    # Limit to 20 total active jobs (e.g. 2 downloading, 18 sleeping)
-    semaphore = asyncio.Semaphore(20)
+    # Limit to 2 total active jobs running
+    semaphore = asyncio.Semaphore(2)
 
     async def handle_job(job):
         url = job["payload"]["url"]
         user_id = job["payload"]["user_id"]
         job_id = job["id"]
 
-        for attempt in range(MAX_RETRIES + 1):
-            async with semaphore:
+        try:
+            for attempt in range(MAX_RETRIES + 1):
                 # The thread limiter ensures only 2 of these actually run concurrently
                 success, permanent, err_str = await to_thread.run_sync(process_yt_dlp_once, url, user_id, job_id, GATEWAY_URL)
             
-            if success:
-                _report_job(job_id, user_id, GATEWAY_URL, ok=True)
-                return
+                if success:
+                    _report_job(job_id, user_id, GATEWAY_URL, ok=True)
+                    return
             
-            if permanent:
-                _report_job(job_id, user_id, GATEWAY_URL, ok=False, error=err_str)
-                return
+                if permanent:
+                    _report_job(job_id, user_id, GATEWAY_URL, ok=False, error=err_str)
+                    return
 
-            if attempt < MAX_RETRIES:
-                sleep_time = random.uniform(0, min(120.0, BASE_BACKOFF_SECONDS * (2 ** attempt)))
-                print(f"[yt-dlp-ingest] job {job_id} failed on attempt {attempt + 1}/{MAX_RETRIES + 1}: {err_str}. Retrying in {sleep_time:.2f}s...", flush=True)
-                await asyncio.sleep(sleep_time)
+                if attempt < MAX_RETRIES:
+                    sleep_time = random.uniform(0, min(120.0, BASE_BACKOFF_SECONDS * (2 ** attempt)))
+                    print(f"[yt-dlp-ingest] job {job_id} failed on attempt {attempt + 1}/{MAX_RETRIES + 1}: {err_str}. Retrying in {sleep_time:.2f}s...", flush=True)
+                    await asyncio.sleep(sleep_time)
             
-        print(f"[yt-dlp-ingest] job {job_id} permanently failed after {MAX_RETRIES + 1} attempts: {err_str}", flush=True)
-        _report_job(job_id, user_id, GATEWAY_URL, ok=False, error=err_str)
+            print(f"[yt-dlp-ingest] job {job_id} permanently failed after {MAX_RETRIES + 1} attempts: {err_str}", flush=True)
+            _report_job(job_id, user_id, GATEWAY_URL, ok=False, error=err_str)
+        finally:
+            semaphore.release()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         while True:
             try:
-                res = await client.post(claim_url, json={"kind": "yt_dlp_ingest", "lease_secs": 600}, headers=headers)
+                await semaphore.acquire()
+                res = await client.post(claim_url, json={"kind": "yt_dlp_ingest", "lease_secs": 1800}, headers=headers)
                 if res.status_code == 204:
+                    semaphore.release()
                     await asyncio.sleep(5)
                     continue
 
@@ -90,9 +94,11 @@ async def claim_worker_loop():
                 
             except httpx.HTTPError as e:
                 print(f"[yt-dlp-ingest] http error claiming job: {e}", flush=True)
+                semaphore.release()
                 await asyncio.sleep(5)
             except Exception as e:
                 print(f"[yt-dlp-ingest] unexpected error in worker loop: {e}", flush=True)
+                semaphore.release()
                 await asyncio.sleep(5)
 
 
@@ -125,7 +131,7 @@ def process_yt_dlp_once(url: str, user_id: str, job_id: int, target_gateway_url:
         ydl_opts = {
             'force_ipv4': True,
             'format': 'bestaudio/best',
-            'outtmpl': os.path.join(tempfile.gettempdir(), '%(id)s.%(ext)s'),
+            'outtmpl': '%(id)s.%(ext)s',
             'paths': {'home': job_tmp, 'temp': job_tmp},
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',

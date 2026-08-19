@@ -13,10 +13,13 @@ pub mod page;
 pub mod pdb;
 pub mod anlz;
 pub mod track;
-pub mod cache;
-pub mod validate;
 pub mod auxiliary;
+
+#[cfg(feature = "debug-tools")]
+pub mod validate;
+#[cfg(feature = "debug-tools")]
 pub mod xml;
+#[cfg(feature = "debug-tools")]
 pub mod diff;
 
 #[cfg(feature = "device-library")]
@@ -29,12 +32,15 @@ pub use track::{TrackAnalysis, BeatGrid, Beat, Waveform, WaveformPreview, Wavefo
                 Key, FileType, CuePoint, CueType, HotCueColor};
 pub use pdb::PdbBuilder;
 pub use anlz::{generate_dat_file, generate_ext_file, generate_2ex_file, generate_anlz_path};
-pub use cache::{AnalysisCache, CacheStats, compute_file_hash};
-pub use validate::{validate_pdb, validate_and_print, ValidationResult, PdbStats};
 pub use auxiliary::{generate_devsetting, generate_djprofile, artwork_folder_path,
                     artwork_thumbnail_name, artwork_full_name, ARTWORK_THUMBNAIL_SIZE,
                     ARTWORK_FULL_SIZE};
+
+#[cfg(feature = "debug-tools")]
+pub use validate::{validate_pdb, validate_and_print, ValidationResult, PdbStats};
+#[cfg(feature = "debug-tools")]
 pub use xml::{generate_xml, XmlExportOptions};
+#[cfg(feature = "debug-tools")]
 pub use diff::{diff_pdb, PdbDiff, PageDiff, ByteRange};
 
 #[cfg(feature = "device-library")]

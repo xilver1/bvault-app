@@ -270,31 +270,39 @@ async fn list_tracks(
     Query(p): Query<Pagination>,
 ) -> ApiResult<Json<Vec<TrackView>>> {
     let q = p.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let tracks = st.meta.list_tracks(Some(user.id), p.limit, p.offset, q).await?;
+    let tracks = st.meta.list_tracks(user.id, p.limit, p.offset, q).await?;
 
     let mut out = Vec::with_capacity(tracks.len());
     for t in tracks {
-        // Analysis-derived fields only exist once the track is analyzed; absence
-        // of the artifact is simply "not analyzed yet", shown as blanks.
-        let summary = st
-            .artifacts
-            .get(&t.hash, "analysis.json")
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<AnalysisSummary>(&bytes).ok());
-
-        let (duration_secs, bpm, bitrate, mut size_bytes) = match summary {
-            Some(s) => (Some(s.duration_secs), Some(s.bpm), Some(s.bitrate), Some(s.file_size)),
-            None => (None, None, None, None),
-        };
-
-        // Size is cheap to show even without analysis: stat the raw file.
-        if size_bytes.is_none() {
-            if let Ok(path) = st.raw.resolve(&t.raw_location) {
-                if let Ok(md) = std::fs::metadata(path) {
-                    size_bytes = Some(md.len());
+        let artifacts = st.artifacts.clone();
+        let raw = st.raw.clone();
+        let hash = t.hash.clone();
+        let raw_loc = t.raw_location.clone();
+        
+        let (summary_opt, mut size_bytes) = tokio::task::spawn_blocking(move || {
+            let summary = artifacts
+                .get(&hash, "analysis.json")
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<AnalysisSummary>(&bytes).ok());
+            
+            let mut sz = None;
+            if summary.is_none() {
+                if let Ok(path) = raw.resolve(&raw_loc) {
+                    if let Ok(md) = std::fs::metadata(path) {
+                        sz = Some(md.len());
+                    }
                 }
             }
-        }
+            (summary, sz)
+        }).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
+
+        let (duration_secs, bpm, bitrate) = match summary_opt {
+            Some(s) => {
+                size_bytes = Some(s.file_size);
+                (Some(s.duration_secs), Some(s.bpm), Some(s.bitrate))
+            }
+            None => (None, None, None),
+        };
 
         out.push(TrackView {
             hash: t.hash,
@@ -323,7 +331,7 @@ async fn register_track(
     Json(t): Json<RegisterTrack>,
 ) -> ApiResult<Json<serde_json::Value>> {
     st.meta
-        .upsert_track(Some(user.id), &t.hash, &t.raw_location, t.title.as_deref(), t.artist.as_deref())
+        .upsert_track(user.id, &t.hash, &t.raw_location, t.title.as_deref(), t.artist.as_deref())
         .await?;
     Ok(Json(serde_json::json!({ "hash": t.hash })))
 }
@@ -335,7 +343,7 @@ async fn download_track_raw(
 ) -> ApiResult<impl IntoResponse> {
     let track = st
         .meta
-        .get_track_by_hash(Some(user.id), &hash)
+        .get_track_by_hash(user.id, &hash)
         .await?
         .ok_or(GatewayError::NotFound)?;
 
@@ -379,7 +387,7 @@ async fn create_playlist(
     }
     let id = st
         .meta
-        .create_playlist(Some(user.id), &req.name, req.description.as_deref(), &req.hashes)
+        .create_playlist(user.id, &req.name, req.description.as_deref(), &req.hashes)
         .await?;
     Ok(Json(CreatedId { id }))
 }
@@ -388,7 +396,7 @@ async fn list_playlists(
     user: AuthUser,
     State(st): State<AppState>,
 ) -> ApiResult<Json<Vec<Playlist>>> {
-    Ok(Json(st.meta.list_playlists(Some(user.id)).await?))
+    Ok(Json(st.meta.list_playlists(user.id).await?))
 }
 
 async fn get_playlist(
@@ -397,7 +405,7 @@ async fn get_playlist(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Playlist>> {
     st.meta
-        .get_playlist(Some(user.id), id)
+        .get_playlist(user.id, id)
         .await?
         .map(Json)
         .ok_or(GatewayError::NotFound)
@@ -408,7 +416,7 @@ async fn playlist_hashes(
     State(st): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<String>>> {
-    Ok(Json(st.meta.playlist_hashes(Some(user.id), id).await?))
+    Ok(Json(st.meta.playlist_hashes(user.id, id).await?))
 }
 
 async fn delete_playlist_endpoint(
@@ -416,7 +424,7 @@ async fn delete_playlist_endpoint(
     State(st): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    st.meta.delete_playlist(Some(user.id), id).await?;
+    st.meta.delete_playlist(user.id, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -431,7 +439,7 @@ async fn remove_playlist_tracks_endpoint(
     Path(id): Path<Uuid>,
     Json(req): Json<RemoveTracksRequest>,
 ) -> ApiResult<StatusCode> {
-    st.meta.remove_playlist_tracks(Some(user.id), id, &req.hashes).await?;
+    st.meta.remove_playlist_tracks(user.id, id, &req.hashes).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -459,10 +467,10 @@ async fn analyze(
         return Err(GatewayError::BadRequest("no playlists selected".into()));
     }
 
-    let tracks = st.meta.resolve_hashes(Some(user.id), &req.playlist_ids).await?;
+    let tracks = st.meta.resolve_hashes(user.id, &req.playlist_ids).await?;
     let all_hashes: Vec<String> = tracks.iter().map(|(h, _)| h.clone()).collect();
 
-    let batch_id = st.meta.create_batch(Some(user.id), req.name.as_deref(), &all_hashes).await?;
+    let batch_id = st.meta.create_batch(user.id, req.name.as_deref(), &all_hashes).await?;
 
     let mut enqueued = 0usize;
     for (hash, raw_location) in tracks {
@@ -502,14 +510,16 @@ async fn batch_progress(
     State(st): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<BatchProgress>> {
-    let batch = st.meta.get_batch(Some(user.id), id).await?.ok_or(GatewayError::NotFound)?;
+    let batch = st.meta.get_batch(user.id, id).await?.ok_or(GatewayError::NotFound)?;
 
     let total = batch.hashes.len() as i64;
-    let done = batch
-        .hashes
-        .iter()
-        .filter(|h| st.artifacts.exists(h.as_str()))
-        .count() as i64;
+    
+    let artifacts = st.artifacts.clone();
+    let hashes = batch.hashes.clone();
+    let done = tokio::task::spawn_blocking(move || {
+        hashes.iter().filter(|h| artifacts.exists(h.as_str())).count() as i64
+    }).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
+    
     let failed = st.queue.count_dead(JobKind::Analysis, &batch.hashes).await?;
 
     Ok(Json(BatchProgress {
@@ -538,12 +548,13 @@ async fn ingest_upload(
     State(st): State<AppState>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<IngestResult>> {
-    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut file_path: Option<std::path::PathBuf> = None;
     let mut file_name: Option<String> = None;
     let mut title_override: Option<String> = None;
     let mut artist_override: Option<String> = None;
+    let mut final_hash: Option<String> = None;
 
-    while let Some(field) = multipart
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| GatewayError::BadRequest(e.to_string()))?
@@ -551,11 +562,20 @@ async fn ingest_upload(
         let name = field.name().unwrap_or("").to_string();
         if name == "file" || name == "audio" {
             file_name = field.file_name().map(|s| s.to_string());
-            let data = field
-                .bytes()
-                .await
-                .map_err(|e| GatewayError::BadRequest(e.to_string()))?;
-            file_bytes = Some(data.to_vec());
+            
+            let temp_dir = std::env::temp_dir();
+            let tmp_path = temp_dir.join(Uuid::new_v4().to_string());
+            let mut file = tokio::fs::File::create(&tmp_path).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
+            let mut hasher = bvault_hash::ContentHasher::new();
+            
+            use tokio::io::AsyncWriteExt;
+            while let Some(chunk) = field.chunk().await.map_err(|e| GatewayError::BadRequest(e.to_string()))? {
+                hasher.update(&chunk);
+                file.write_all(&chunk).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
+            }
+            
+            file_path = Some(tmp_path);
+            final_hash = Some(bvault_hash::hash_hex(hasher.finalize()));
         } else if name == "title" {
             if let Ok(text) = field.text().await {
                 title_override = Some(text);
@@ -567,18 +587,23 @@ async fn ingest_upload(
         }
     }
 
-    let bytes = file_bytes.ok_or_else(|| GatewayError::BadRequest("missing audio file payload".into()))?;
-    let hash = bvault_hash::hash_hex(bvault_hash::hash_bytes(&bytes));
+    let tmp_path = file_path.ok_or_else(|| GatewayError::BadRequest("missing audio file payload".into()))?;
+    let hash = final_hash.unwrap();
     let ext = file_name
         .as_deref()
         .and_then(|n| std::path::Path::new(n).extension())
         .and_then(|e| e.to_str())
         .unwrap_or("mp3");
 
-    let raw_location = st
-        .raw
-        .write(&hash, ext, &bytes)
-        .map_err(|e| GatewayError::Internal(e.to_string()))?;
+    let raw_store = st.raw.clone();
+    let hash_clone = hash.clone();
+    let ext_string = ext.to_string();
+    let raw_location = tokio::task::spawn_blocking(move || {
+        raw_store.store_from_temp(tmp_path, &hash_clone, &ext_string)
+    })
+    .await
+    .map_err(|e| GatewayError::Internal(e.to_string()))?
+    .map_err(|e| GatewayError::Internal(e.to_string()))?;
 
     let fallback_title = file_name
         .as_deref()
@@ -589,7 +614,7 @@ async fn ingest_upload(
 
     st.meta
         .upsert_track(
-            Some(user.id),
+            user.id,
             &hash,
             &raw_location,
             final_title.as_deref(),
@@ -647,13 +672,9 @@ async fn ingest_gdrive(
     State(st): State<AppState>,
     Json(req): Json<GDriveIngestRequest>,
 ) -> ApiResult<Json<GDriveIngestResponse>> {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| GatewayError::Internal(format!("client err: {e}")))?;
     let q = format!("'{}' in parents and trashed = false", req.folder_id);
 
-    let list_res: GDriveFileList = client
+    let list_res: GDriveFileList = st.http
         .get("https://www.googleapis.com/drive/v3/files")
         .bearer_auth(&req.access_token)
         .query(&[("q", q), ("fields", "files(id, name, mimeType)".to_string())])
@@ -678,7 +699,7 @@ async fn ingest_gdrive(
         }
 
         let mut download_url = format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", file.id);
-        let mut bytes_res = client
+        let mut bytes_res = st.http
             .get(&download_url)
             .bearer_auth(&req.access_token)
             .send()
@@ -687,10 +708,10 @@ async fn ingest_gdrive(
         let mut redirects = 0;
         while let Ok(r) = &bytes_res {
             if r.status().is_redirection() && redirects < 5 {
-                if let Some(loc) = r.headers().get(reqwest::header::LOCATION) {
+                if let Some(loc) = r.headers().get(axum::http::header::LOCATION) {
                     if let Ok(loc_str) = loc.to_str() {
                         download_url = loc_str.to_string();
-                        bytes_res = client.get(&download_url).bearer_auth(&req.access_token).send().await;
+                        bytes_res = st.http.get(&download_url).bearer_auth(&req.access_token).send().await;
                         redirects += 1;
                         continue;
                     }
@@ -699,27 +720,44 @@ async fn ingest_gdrive(
             break;
         }
 
-        let bytes = match bytes_res {
-            Ok(resp) if resp.status().is_success() => match resp.bytes().await {
-                Ok(b) => b,
-                Err(_) => continue,
-            },
+        let mut bytes_stream = match bytes_res {
+            Ok(resp) if resp.status().is_success() => resp,
             _ => continue,
         };
 
-        let hash = bvault_hash::hash_hex(bvault_hash::hash_bytes(&bytes));
+        let temp_dir = std::env::temp_dir();
+        let tmp_path = temp_dir.join(Uuid::new_v4().to_string());
+        
+        let mut hasher = bvault_hash::ContentHasher::new();
+        let mut f = tokio::fs::File::create(&tmp_path).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
+        use tokio::io::AsyncWriteExt;
+
+        while let Ok(Some(chunk)) = bytes_stream.chunk().await {
+            hasher.update(&chunk);
+            f.write_all(&chunk).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
+        }
+
+        let hash = bvault_hash::hash_hex(hasher.finalize());
         let ext = std::path::Path::new(&file.name)
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("mp3");
 
-        if let Ok(raw_location) = st.raw.write(&hash, ext, &bytes) {
+        let raw_store = st.raw.clone();
+        let hash_clone = hash.clone();
+        let ext_string = ext.to_string();
+        
+        let raw_location_res = tokio::task::spawn_blocking(move || {
+            raw_store.store_from_temp(tmp_path, &hash_clone, &ext_string)
+        }).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
+
+        if let Ok(raw_location) = raw_location_res {
             let title = std::path::Path::new(&file.name)
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string());
             let _ = st
                 .meta
-                .upsert_track(Some(user.id), &hash, &raw_location, title.as_deref(), None)
+                .upsert_track(user.id, &hash, &raw_location, title.as_deref(), None)
                 .await;
 
             if !st.artifacts.exists(&hash) {
@@ -887,8 +925,7 @@ async fn search_ytdlp(
     let service_url = st.config.yt_dlp_service_url.as_deref()
         .ok_or_else(|| GatewayError::BadRequest("yt-dlp service not configured".into()))?;
 
-    let client = reqwest::Client::new();
-    let mut req = client
+    let mut req = st.http
         .get(format!("{}/search", service_url.trim_end_matches('/')))
         .query(&[("q", &query.q), ("limit", &query.limit.to_string())]);
 

@@ -21,4 +21,5 @@ pub struct AppState {
     /// The raw audio store.
     pub raw: RawStore,
     pub config: Arc<Config>,
+    pub http: reqwest::Client,
 }

@@ -466,7 +466,7 @@ async fn google_oauth_flow(scope_url: &str) -> Result<String> {
 // ---- local ingestion (file, directory, directory-as-playlists) -------------
 
 const AUDIO_EXTS: &[&str] =
-    &["mp3", "flac", "wav", "aiff", "aif", "m4a", "aac", "ogg", "opus", "wma", "alac"];
+    &["mp3", "flac", "wav", "aiff", "aif", "m4a", "aac"];
 
 /// Local ingestion. Three shapes:
 /// - a file → upload it;

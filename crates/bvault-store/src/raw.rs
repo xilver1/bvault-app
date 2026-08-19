@@ -58,6 +58,23 @@ impl RawStore {
 
         Ok(rel_path)
     }
+
+    /// Move an already-written temporary file into the content-addressed store.
+    pub fn store_from_temp(&self, temp_path: PathBuf, hash: &str, ext: &str) -> Result<String> {
+        let prefix = if hash.len() >= 2 { &hash[..2] } else { "00" };
+        let clean_ext = ext.trim_start_matches('.');
+        let ext_str = if clean_ext.is_empty() { "mp3" } else { clean_ext };
+        let rel_path = format!("{}/{}.{}", prefix, hash, ext_str);
+        let target_path = self.root.join(&rel_path);
+
+        if let Some(parent) = target_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        std::fs::rename(temp_path, &target_path)?;
+
+        Ok(rel_path)
+    }
 }
 
 #[cfg(test)]

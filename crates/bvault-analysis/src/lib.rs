@@ -121,9 +121,10 @@ pub fn analyze_source(
 /// Handy for the CLI and tests. The worker uses [`analyze_source`] with a reader
 /// the store hands it, so it never needs a filesystem path.
 pub fn analyze_path(path: &Path, opts: &AnalyzeOptions) -> Result<TrackAnalysis> {
-    // Reuse core's hasher so identity is computed identically everywhere.
-    let file_hash =
-        bvault_core::compute_file_hash(path).map_err(|e| Error::Hash(e.to_string()))?;
+    let mut file_for_hash = std::fs::File::open(path)?;
+    let mut hasher = bvault_hash::ContentHasher::new();
+    std::io::copy(&mut file_for_hash, &mut hasher).map_err(|e| Error::Hash(e.to_string()))?;
+    let file_hash = hasher.finalize();
     let file_size = std::fs::metadata(path)?.len();
     let hint_ext = path.extension().and_then(|e| e.to_str());
     let fallback_title = path.file_stem().and_then(|s| s.to_str());

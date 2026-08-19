@@ -124,7 +124,7 @@ impl Queue {
             where id = (
                 select id from jobs
                 where kind = $1
-                  and (status = 'pending'
+                  and (status = 'pending' or status = 'failed'
                        or (status = 'running' and locked_until < now()))
                 order by created_at
                 for update skip locked
@@ -182,7 +182,7 @@ impl Queue {
         sqlx::query(
             r#"
             update jobs
-            set status = case when attempts >= max_attempts then 'dead' else 'pending' end,
+            set status = case when attempts >= max_attempts then 'dead' else 'failed' end,
                 last_error = $2,
                 locked_until = null,
                 finished_at = case when attempts >= max_attempts then now() else null end,

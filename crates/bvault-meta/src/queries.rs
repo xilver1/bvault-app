@@ -87,7 +87,7 @@ impl Meta {
 
     pub async fn upsert_track(
         &self,
-        user_id: Option<Uuid>,
+        user_id: Uuid,
         hash: &str,
         raw_location: &str,
         title: Option<&str>,
@@ -97,30 +97,32 @@ impl Meta {
         
         sqlx::query(
             r#"
-            insert into tracks (hash, raw_location, title, artist)
-            values ($1, $2, $3, $4)
+            insert into tracks (hash, raw_location)
+            values ($1, $2)
             on conflict (hash) do update
-                set raw_location = excluded.raw_location,
-                    title = coalesce(excluded.title, tracks.title),
-                    artist = coalesce(excluded.artist, tracks.artist)
+                set raw_location = excluded.raw_location
             "#,
         )
         .bind(hash)
         .bind(raw_location)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            insert into user_tracks (user_id, hash, title, artist)
+            values ($1, $2, $3, $4)
+            on conflict (user_id, hash) do update
+                set title = coalesce(excluded.title, user_tracks.title),
+                    artist = coalesce(excluded.artist, user_tracks.artist)
+            "#
+        )
+        .bind(user_id)
+        .bind(hash)
         .bind(title)
         .bind(artist)
         .execute(&mut *tx)
         .await?;
-
-        if let Some(uid) = user_id {
-            sqlx::query(
-                "insert into user_tracks (user_id, hash) values ($1, $2) on conflict do nothing"
-            )
-            .bind(uid)
-            .bind(hash)
-            .execute(&mut *tx)
-            .await?;
-        }
 
         tx.commit().await?;
         Ok(())
@@ -131,18 +133,18 @@ impl Meta {
     /// search (ilike over NULL is NULL), which is the intended behaviour.
     pub async fn list_tracks(
         &self,
-        user_id: Option<Uuid>,
+        user_id: Uuid,
         limit: i64,
         offset: i64,
         q: Option<&str>,
     ) -> Result<Vec<Track>> {
         Ok(sqlx::query_as::<_, Track>(
             r#"
-            select t.hash, t.raw_location, t.title, t.artist, ut.added_at
+            select t.hash, t.raw_location, ut.title, ut.artist, ut.added_at
             from tracks t
             join user_tracks ut on t.hash = ut.hash
-            where ($1::uuid is null or ut.user_id = $1)
-              and ($4::text is null or t.title ilike '%' || $4 || '%')
+            where ut.user_id = $1
+              and ($4::text is null or ut.title ilike '%' || $4 || '%')
             order by ut.added_at desc
             limit $2 offset $3
             "#,
@@ -157,7 +159,7 @@ impl Meta {
 
     pub async fn create_playlist(
         &self,
-        user_id: Option<Uuid>,
+        user_id: Uuid,
         name: &str,
         description: Option<&str>,
         hashes: &[String],
@@ -186,23 +188,22 @@ impl Meta {
             }
         };
 
-        for hash in hashes {
-            sqlx::query(
-                "insert into playlist_tracks (playlist_id, hash) values ($1, $2)
-                 on conflict do nothing",
-            )
-            .bind(id)
-            .bind(hash)
-            .execute(&mut *tx)
-            .await?;
-        }
+        sqlx::query(
+            "insert into playlist_tracks (playlist_id, hash)
+             select $1, unnest($2::text[])
+             on conflict do nothing"
+        )
+        .bind(id)
+        .bind(hashes)
+        .execute(&mut *tx)
+        .await?;
 
         tx.commit().await?;
         Ok(id)
     }
 
-    pub async fn delete_playlist(&self, user_id: Option<Uuid>, id: Uuid) -> Result<()> {
-        sqlx::query("delete from playlists where id = $1 and ($2::uuid is null or user_id = $2)")
+    pub async fn delete_playlist(&self, user_id: Uuid, id: Uuid) -> Result<()> {
+        sqlx::query("delete from playlists where id = $1 and user_id = $2")
             .bind(id)
             .bind(user_id)
             .execute(&self.pool)
@@ -210,17 +211,15 @@ impl Meta {
         Ok(())
     }
 
-    pub async fn remove_playlist_tracks(&self, user_id: Option<Uuid>, id: Uuid, hashes: &[String]) -> Result<()> {
-        // First verify ownership if user_id is provided
-        if let Some(uid) = user_id {
-            let exists: Option<(Uuid,)> = sqlx::query_as("select id from playlists where id = $1 and user_id = $2")
-                .bind(id)
-                .bind(uid)
-                .fetch_optional(&self.pool)
-                .await?;
-            if exists.is_none() {
-                return Ok(());
-            }
+    pub async fn remove_playlist_tracks(&self, user_id: Uuid, id: Uuid, hashes: &[String]) -> Result<()> {
+        // First verify ownership
+        let exists: Option<(Uuid,)> = sqlx::query_as("select id from playlists where id = $1 and user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        if exists.is_none() {
+            return Ok(());
         }
 
         sqlx::query("delete from playlist_tracks where playlist_id = $1 and hash = any($2)")
@@ -231,20 +230,20 @@ impl Meta {
         Ok(())
     }
 
-    pub async fn list_playlists(&self, user_id: Option<Uuid>) -> Result<Vec<Playlist>> {
+    pub async fn list_playlists(&self, user_id: Uuid) -> Result<Vec<Playlist>> {
         Ok(sqlx::query_as::<_, Playlist>(
             "select id, name, description, created_at, updated_at, user_id
-             from playlists where ($1::uuid is null or user_id = $1) order by created_at desc",
+             from playlists where user_id = $1 order by created_at desc",
         )
         .bind(user_id)
         .fetch_all(&self.pool)
         .await?)
     }
 
-    pub async fn get_playlist(&self, user_id: Option<Uuid>, id: Uuid) -> Result<Option<Playlist>> {
+    pub async fn get_playlist(&self, user_id: Uuid, id: Uuid) -> Result<Option<Playlist>> {
         Ok(sqlx::query_as::<_, Playlist>(
             "select id, name, description, created_at, updated_at, user_id
-             from playlists where id = $1 and ($2::uuid is null or user_id = $2)",
+             from playlists where id = $1 and user_id = $2",
         )
         .bind(id)
         .bind(user_id)
@@ -252,12 +251,12 @@ impl Meta {
         .await?)
     }
 
-    pub async fn playlist_hashes(&self, user_id: Option<Uuid>, id: Uuid) -> Result<Vec<String>> {
+    pub async fn playlist_hashes(&self, user_id: Uuid, id: Uuid) -> Result<Vec<String>> {
         let rows: Vec<(String,)> =
             sqlx::query_as(
                 "select pt.hash from playlist_tracks pt
                  join playlists p on p.id = pt.playlist_id
-                 where pt.playlist_id = $1 and ($2::uuid is null or p.user_id = $2)",
+                 where pt.playlist_id = $1 and p.user_id = $2",
             )
             .bind(id)
             .bind(user_id)
@@ -266,13 +265,13 @@ impl Meta {
         Ok(rows.into_iter().map(|(h,)| h).collect())
     }
 
-    pub async fn get_track_by_hash(&self, user_id: Option<Uuid>, hash: &str) -> Result<Option<Track>> {
+    pub async fn get_track_by_hash(&self, user_id: Uuid, hash: &str) -> Result<Option<Track>> {
         Ok(sqlx::query_as::<_, Track>(
             r#"
-            select t.hash, t.raw_location, t.title, t.artist, ut.added_at
+            select t.hash, t.raw_location, ut.title, ut.artist, ut.added_at
             from tracks t
             join user_tracks ut on t.hash = ut.hash
-            where t.hash = $1 and ($2::uuid is null or ut.user_id = $2)
+            where t.hash = $1 and ut.user_id = $2
             "#,
         )
         .bind(hash)
@@ -281,14 +280,14 @@ impl Meta {
         .await?)
     }
 
-    pub async fn resolve_hashes(&self, user_id: Option<Uuid>, playlist_ids: &[Uuid]) -> Result<Vec<(String, String)>> {
+    pub async fn resolve_hashes(&self, user_id: Uuid, playlist_ids: &[Uuid]) -> Result<Vec<(String, String)>> {
         Ok(sqlx::query_as::<_, (String, String)>(
             r#"
             select distinct t.hash, t.raw_location
             from playlist_tracks pt
             join playlists p on p.id = pt.playlist_id
             join tracks t on t.hash = pt.hash
-            where pt.playlist_id = any($1) and ($2::uuid is null or p.user_id = $2)
+            where pt.playlist_id = any($1) and p.user_id = $2
             "#,
         )
         .bind(playlist_ids)
@@ -297,7 +296,7 @@ impl Meta {
         .await?)
     }
 
-    pub async fn create_batch(&self, user_id: Option<Uuid>, name: Option<&str>, hashes: &[String]) -> Result<Uuid> {
+    pub async fn create_batch(&self, user_id: Uuid, name: Option<&str>, hashes: &[String]) -> Result<Uuid> {
         let (id,): (Uuid,) =
             sqlx::query_as("insert into batches (user_id, name, hashes) values ($1, $2, $3) returning id")
                 .bind(user_id)
@@ -308,9 +307,9 @@ impl Meta {
         Ok(id)
     }
 
-    pub async fn get_batch(&self, user_id: Option<Uuid>, id: Uuid) -> Result<Option<Batch>> {
+    pub async fn get_batch(&self, user_id: Uuid, id: Uuid) -> Result<Option<Batch>> {
         Ok(sqlx::query_as::<_, Batch>(
-            "select id, name, hashes, created_at, user_id from batches where id = $1 and ($2::uuid is null or user_id = $2)",
+            "select id, name, hashes, created_at, user_id from batches where id = $1 and user_id = $2",
         )
         .bind(id)
         .bind(user_id)

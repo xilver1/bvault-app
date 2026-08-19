@@ -2,6 +2,10 @@
 name = "bvault-core"
 version.workspace = true
 edition = "2021"
+[[bin]]
+name = "pdbdiff"
+path = "src/bin/pdbdiff.rs"
+required-features = ["debug-tools"]
 
 [dependencies]
 binrw.workspace = true
@@ -19,3 +23,4 @@ tempfile = "3.13"
 # need the formats/types (the analysis worker) don't drag in rusqlite -> OpenSSL.
 default = []
 device-library = ["dep:rusqlite"]
+debug-tools = []

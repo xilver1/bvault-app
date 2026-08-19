@@ -49,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
         artifacts: ArtifactStore::new(&config.artifact_store_root),
         raw: RawStore::new(&config.raw_store_root),
         config: Arc::new(config),
+        http: reqwest::Client::new(),
     };
 
     let listener = TcpListener::bind(&state.config.bind_addr)
