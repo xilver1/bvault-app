@@ -35,26 +35,10 @@ enum Commands {
         #[command(subcommand)]
         command: Option<StatusCommands>,
     },
-    /// Ingest a track (YouTube)
+    /// Ingest a track or directory
     Ingest {
-        #[arg(required_unless_present = "youtube_sso")]
-        query: Option<String>,
-        #[arg(long, conflicts_with_all = ["local", "gdrive", "youtube_sso", "youtube_playlist"])]
-        youtube: bool,
-        #[arg(long, conflicts_with_all = ["youtube", "gdrive", "youtube_sso", "youtube_playlist"])]
-        local: bool,
-        #[arg(long, conflicts_with_all = ["youtube", "local", "youtube_sso", "youtube_playlist"])]
-        gdrive: bool,
-        #[arg(long, conflicts_with_all = ["youtube", "local", "gdrive", "youtube_playlist"])]
-        youtube_sso: bool,
-        #[arg(long, conflicts_with_all = ["youtube", "local", "gdrive", "youtube_sso"])]
-        youtube_playlist: bool,
-        /// For --local on a directory: make each top-level subfolder a playlist.
-        #[arg(long, requires = "local")]
-        playlists: bool,
-        /// Do not wait for jobs to finish, queue them in the background
-        #[arg(long)]
-        bg: bool,
+        #[command(subcommand)]
+        command: IngestCommands,
     },
     /// List library (optionally filter by title)
     Library {
@@ -110,6 +94,43 @@ pub enum StatusCommands {
     Analysis,
 }
 
+#[derive(Subcommand)]
+pub enum IngestCommands {
+    /// Ingest from YouTube
+    Youtube {
+        /// Query URL of single video or playlist
+        query: Option<String>,
+        /// Execute SSO authorization flow and store credentials
+        #[arg(long, exclusive = true)]
+        login: bool,
+        /// List your YouTube playlists
+        #[arg(long, conflicts_with = "login")]
+        playlists: bool,
+        /// Do not wait for jobs to finish, queue them in the background
+        #[arg(long, conflicts_with = "login")]
+        bg: bool,
+    },
+    /// Ingest from local filesystem
+    Local {
+        /// Directory or file path
+        path: String,
+        /// Make each top-level subfolder a playlist
+        #[arg(long)]
+        playlists: bool,
+        /// Do not wait for jobs to finish, queue them in the background
+        #[arg(long)]
+        bg: bool,
+    },
+    /// Ingest from Google Drive
+    Gdrive {
+        /// Google Drive folder path
+        path: String,
+        /// Do not wait for jobs to finish, queue them in the background
+        #[arg(long)]
+        bg: bool,
+    },
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -131,8 +152,18 @@ async fn main() -> Result<()> {
         Commands::Status { command } => {
             status::run_status_flow(command.as_ref()).await?;
         }
-        Commands::Ingest { query, youtube, local, gdrive, youtube_sso, youtube_playlist, playlists, bg } => {
-            ingest::run_ingest_flow(query.as_deref(), *youtube, *local, *gdrive, *youtube_sso, *youtube_playlist, *playlists, *bg).await?;
+        Commands::Ingest { command } => {
+            match command {
+                IngestCommands::Youtube { query, login, playlists, bg } => {
+                    ingest::run_youtube_ingest(query.as_deref(), *login, *playlists, *bg).await?;
+                }
+                IngestCommands::Local { path, playlists, bg } => {
+                    ingest::run_local_ingest_cmd(path, *playlists, *bg).await?;
+                }
+                IngestCommands::Gdrive { path, bg } => {
+                    ingest::run_gdrive_ingest(path, *bg).await?;
+                }
+            }
         }
         Commands::Library { search } => {
             library::run_library_flow(search.as_deref()).await?;
