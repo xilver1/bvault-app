@@ -25,6 +25,8 @@ pub struct Config {
     pub yt_dlp_service_url: Option<String>,
     /// API Key used to secure inter-service comms (e.g. for yt-dlp-ingest -> gateway)
     pub internal_api_key: Option<String>,
+    /// 32-byte AES-256-GCM key for encrypting youtube session cookies at rest
+    pub cookie_encryption_key: [u8; 32],
 }
 
 impl Config {
@@ -40,6 +42,17 @@ impl Config {
             session_ttl: Duration::from_secs(optional("SESSION_TTL_SECONDS", "2592000").parse()?),
             yt_dlp_service_url: std::env::var("YT_DLP_SERVICE_URL").ok(),
             internal_api_key: std::env::var("INTERNAL_API_KEY").ok(),
+            cookie_encryption_key: {
+                let hex_str = required("COOKIE_ENCRYPTION_KEY_HEX")?;
+                let bytes = hex::decode(&hex_str)
+                    .map_err(|e| anyhow!("invalid hex for COOKIE_ENCRYPTION_KEY_HEX: {e}"))?;
+                if bytes.len() != 32 {
+                    return Err(anyhow!("COOKIE_ENCRYPTION_KEY_HEX must be exactly 32 bytes (64 hex chars), got {}", bytes.len()));
+                }
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&bytes);
+                key
+            },
         })
     }
 }

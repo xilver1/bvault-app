@@ -33,3 +33,4 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { workspace = true }
 bytes = "1.5"
+hex = "0.4"

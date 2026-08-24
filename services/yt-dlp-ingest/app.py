@@ -122,17 +122,33 @@ def process_yt_dlp_once(url: str, user_id: str, job_id: int, target_gateway_url:
         ['web_embedded', 'default', 'mweb', 'web'],
         ['mweb', 'web_embedded', 'default', 'android'],
         ['default', 'web_embedded', 'web', 'mweb'],
-        ['ios', 'web_embedded', 'default', 'tv'],
         ['android', 'ios', 'web_embedded', 'default']
     ]
     chosen_clients = random.choice(client_mixes)
     
     try:
+        cookie_file = os.path.join(job_tmp, "cookies.txt")
+        headers = {"X-User-Id": user_id}
+        if INTERNAL_API_KEY:
+            headers["X-Internal-Key"] = INTERNAL_API_KEY
+
+        try:
+            cookie_res = httpx.get(f"{target_gateway_url.rstrip('/')}/auth/youtube/cookies", headers=headers, timeout=10.0)
+            if cookie_res.status_code == 200:
+                cookies_txt = cookie_res.json().get("cookies_txt", "")
+                if cookies_txt:
+                    with open(cookie_file, "w") as f:
+                        f.write(cookies_txt)
+                    print(f"[yt-dlp-ingest] Loaded cookies for user {user_id}", flush=True)
+        except Exception as e:
+            print(f"[yt-dlp-ingest] Failed to fetch cookies: {e}", flush=True)
+
         ydl_opts = {
             'force_ipv4': True,
             'format': 'bestaudio/best',
             'outtmpl': '%(id)s.%(ext)s',
             'paths': {'home': job_tmp, 'temp': job_tmp},
+            'cookiefile': cookie_file,
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
@@ -182,6 +198,16 @@ def process_yt_dlp_once(url: str, user_id: str, job_id: int, target_gateway_url:
             finally:
                 if os.path.exists(mp3_filename):
                     os.remove(mp3_filename)
+
+        # Upload refreshed cookies back to gateway
+        if os.path.exists(cookie_file):
+            try:
+                with open(cookie_file, "r") as f:
+                    new_cookies = f.read()
+                httpx.post(f"{target_gateway_url.rstrip('/')}/auth/youtube/cookies", json={"cookies_txt": new_cookies}, headers=headers, timeout=10.0)
+                print(f"[yt-dlp-ingest] Updated cookies for user {user_id}", flush=True)
+            except Exception as e:
+                print(f"[yt-dlp-ingest] Failed to update cookies: {e}", flush=True)
 
         return (True, False, "")
 

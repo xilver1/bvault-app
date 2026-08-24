@@ -24,6 +24,11 @@ impl Meta {
         Self { pool }
     }
 
+    /// Access the underlying PgPool
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     // ---- auth: users + sessions --------------------------------------------
 
     pub async fn create_user(&self, username: &str, password_hash: &str) -> Result<Uuid> {

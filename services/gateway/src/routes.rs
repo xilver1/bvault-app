@@ -27,6 +27,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
+        .route("/auth/youtube/cookies", get(get_youtube_cookies).post(set_youtube_cookies))
         .route("/tracks", get(list_tracks).post(register_track))
         .route("/tracks/{hash}/raw", get(download_track_raw))
         .route("/playlists", get(list_playlists).post(create_playlist))
@@ -941,4 +942,51 @@ async fn search_ytdlp(
     let results = resp.json().await
         .map_err(|e| GatewayError::Internal(format!("yt-dlp search parse error: {e}")))?;
     Ok(Json(results))
+}
+
+#[derive(Serialize)]
+struct CookieResponse {
+    cookies_txt: String,
+}
+
+#[derive(Deserialize)]
+struct CookieRequest {
+    cookies_txt: String,
+}
+
+async fn get_youtube_cookies(
+    user: AuthUser,
+    State(st): State<AppState>,
+) -> ApiResult<Json<CookieResponse>> {
+    let row: Option<Vec<u8>> = sqlx::query_scalar("SELECT youtube_cookies FROM users WHERE id = $1")
+        .bind(user.id)
+        .fetch_one(st.meta.pool())
+        .await
+        .map_err(|e| GatewayError::Internal(e.to_string()))?;
+
+    let ciphertext = row
+        .ok_or_else(|| GatewayError::NotFound)?;
+
+    let cookies_txt = bvault_auth::decrypt_cookie(&ciphertext, &st.config.cookie_encryption_key)
+        .map_err(|e| GatewayError::Internal(format!("Failed to decrypt cookies: {e}")))?;
+
+    Ok(Json(CookieResponse { cookies_txt }))
+}
+
+async fn set_youtube_cookies(
+    user: AuthUser,
+    State(st): State<AppState>,
+    Json(payload): Json<CookieRequest>,
+) -> ApiResult<StatusCode> {
+    let ciphertext = bvault_auth::encrypt_cookie(&payload.cookies_txt, &st.config.cookie_encryption_key)
+        .map_err(|e| GatewayError::Internal(format!("Failed to encrypt cookies: {e}")))?;
+
+    sqlx::query("UPDATE users SET youtube_cookies = $1 WHERE id = $2")
+        .bind(ciphertext)
+        .bind(user.id)
+        .execute(st.meta.pool())
+        .await
+        .map_err(|e| GatewayError::Internal(e.to_string()))?;
+
+    Ok(StatusCode::OK)
 }

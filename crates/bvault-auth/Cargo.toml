@@ -4,6 +4,7 @@ version.workspace = true
 edition = "2021"
 
 [dependencies]
+aes-gcm = "0.10"
 # Passwords: Argon2id (memory-hard, slow-by-design).
 argon2 = "0.5"
 # Explicit CSPRNG dep so OsRng is always available (salt generation + tokens),

@@ -18,11 +18,19 @@ use rand_core::{OsRng, RngCore};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use sha2::{Digest, Sha256};
+use aes_gcm::{
+    aead::{Aead, AeadCore, KeyInit},
+    Aes256Gcm, Key, Nonce,
+};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("password hashing: {0}")]
     Hash(String),
+    #[error("encryption error: {0}")]
+    Encryption(String),
+    #[error("decryption error: {0}")]
+    Decryption(String),
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -75,6 +83,35 @@ fn to_hex(bytes: &[u8]) -> String {
         s.push(char::from_digit((b & 0x0f) as u32, 16).unwrap());
     }
     s
+}
+
+/// Encrypt a cookie string (or any plaintext) using AES-256-GCM.
+/// The 96-bit nonce is generated randomly and prepended to the ciphertext.
+pub fn encrypt_cookie(plaintext: &str, key: &[u8; 32]) -> Result<Vec<u8>> {
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; unique per message
+    let ciphertext = cipher.encrypt(&nonce, plaintext.as_bytes())
+        .map_err(|e| Error::Encryption(e.to_string()))?;
+    
+    // Prepend nonce to ciphertext
+    let mut payload = nonce.to_vec();
+    payload.extend(ciphertext);
+    Ok(payload)
+}
+
+/// Decrypt a cookie payload (nonce + ciphertext) using AES-256-GCM.
+pub fn decrypt_cookie(payload: &[u8], key: &[u8; 32]) -> Result<String> {
+    if payload.len() < 12 {
+        return Err(Error::Decryption("payload too short".into()));
+    }
+    let (nonce_bytes, ciphertext) = payload.split_at(12);
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let nonce = Nonce::from_slice(nonce_bytes);
+    
+    let plaintext = cipher.decrypt(nonce, ciphertext)
+        .map_err(|e| Error::Decryption(e.to_string()))?;
+        
+    String::from_utf8(plaintext).map_err(|_| Error::Decryption("invalid utf8".into()))
 }
 
 #[cfg(test)]
