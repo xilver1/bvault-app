@@ -1,12 +1,12 @@
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::fs::{self, File};
-use tokio::io::{AsyncWriteExt, BufWriter};
+
 use anyhow::{Context, Result};
 use reqwest::Client;
-use tracing::{info, warn, debug};
+use tracing::debug;
 
-use bvault_manifest::{Manifest, ManifestEntry, Source};
+use bvault_manifest::{Manifest, Source};
+
+use crate::sink::{UsbSink, UsbTarget};
 
 pub trait TransferProgress: Send + Sync {
     fn on_start(&self, total_files: usize, total_bytes: u64);
@@ -21,8 +21,18 @@ pub trait TransferProgress: Send + Sync {
 pub struct ReconcileOptions {
     pub base_url: String,
     pub export_id: String,
-    pub usb_root: PathBuf,
+    /// Where the export is written — a filesystem path (desktop / `--path`) or
+    /// an Android SAF tree (phone). The reconcile loop is agnostic to which.
+    pub target: UsbTarget,
     pub auth_token: String,
+}
+
+/// The `/`-separated parent of a USB path, or `""` for a root-level file.
+fn parent_of(usb_path: &str) -> &str {
+    match usb_path.rfind('/') {
+        Some(i) => &usb_path[..i],
+        None => "",
+    }
 }
 
 pub async fn reconcile_export<P: TransferProgress + 'static>(
@@ -30,6 +40,7 @@ pub async fn reconcile_export<P: TransferProgress + 'static>(
     progress: Arc<P>,
 ) -> Result<()> {
     let client = Client::new();
+    let sink = UsbSink::new(opts.target);
     let manifest_url = format!("{}/exports/{}/manifest", opts.base_url, opts.export_id);
 
     // 1. Fetch manifest
@@ -53,20 +64,17 @@ pub async fn reconcile_export<P: TransferProgress + 'static>(
     progress.on_start(total_files, total_bytes);
 
     for entry in &manifest.entries {
-        let dest_path = opts.usb_root.join(&entry.usb_path);
-        
-        // Ensure parent directory exists
-        if let Some(parent) = dest_path.parent() {
-            fs::create_dir_all(parent).await.context("Failed to create directories on USB")?;
-        }
+        // Ensure the parent directory exists on the target.
+        sink.ensure_dir(parent_of(&entry.usb_path))
+            .await
+            .context("Failed to create directories on USB")?;
 
-        // Check if we can skip it
-        if dest_path.exists() {
-            if let Ok(meta) = fs::metadata(&dest_path).await {
-                if meta.len() == entry.size {
-                    progress.on_file_skipped(&entry.usb_path);
-                    continue;
-                }
+        // Skip an already-present, same-size file (desktop only; SAF reports
+        // absent and always rewrites).
+        if let Some(len) = sink.file_len(&entry.usb_path).await? {
+            if len == entry.size {
+                progress.on_file_skipped(&entry.usb_path);
+                continue;
             }
         }
 
@@ -74,9 +82,7 @@ pub async fn reconcile_export<P: TransferProgress + 'static>(
 
         let file_url = format!(
             "{}/exports/{}/files/{}",
-            opts.base_url,
-            opts.export_id,
-            entry.usb_path
+            opts.base_url, opts.export_id, entry.usb_path
         );
 
         let mut res = client
@@ -91,16 +97,21 @@ pub async fn reconcile_export<P: TransferProgress + 'static>(
             continue;
         }
 
-        let tmp_path = dest_path.with_extension("tmp");
-        let mut file = BufWriter::new(File::create(&tmp_path).await.context("Failed to create tmp file")?);
-        
+        let mut writer = match sink.create(&entry.usb_path).await {
+            Ok(w) => w,
+            Err(e) => {
+                progress.on_error(&entry.usb_path, &format!("Open error: {}", e));
+                continue;
+            }
+        };
+
         let mut hasher = bvault_hash::ContentHasher::new();
-        
         let mut success = true;
+
         loop {
             match res.chunk().await {
                 Ok(Some(chunk)) => {
-                    if let Err(e) = file.write_all(&chunk).await {
+                    if let Err(e) = writer.write_all(&chunk).await {
                         progress.on_error(&entry.usb_path, &format!("Write error: {}", e));
                         success = false;
                         break;
@@ -118,48 +129,35 @@ pub async fn reconcile_export<P: TransferProgress + 'static>(
         }
 
         if !success {
-            let _ = fs::remove_file(&tmp_path).await;
+            writer.abort().await;
             continue;
         }
 
-        // Fsync before renaming
-        if let Err(e) = file.flush().await {
-            progress.on_error(&entry.usb_path, &format!("Flush error: {}", e));
-            let _ = fs::remove_file(&tmp_path).await;
-            continue;
-        }
-        
-        let inner_file = file.into_inner();
-        if let Err(e) = inner_file.sync_all().await {
-            progress.on_error(&entry.usb_path, &format!("Fsync error: {}", e));
-            let _ = fs::remove_file(&tmp_path).await;
-            continue;
-        }
-
-        // Hash verification for raw audio
+        // Hash verification for raw audio (verbatim content-addressed store).
         if let Source::Raw { hash } = &entry.source {
             let computed_hash = bvault_hash::hash_hex(hasher.finalize());
             if &computed_hash != hash {
                 progress.on_error(&entry.usb_path, "Hash mismatch: file corrupted during transfer");
-                let _ = fs::remove_file(&tmp_path).await;
+                writer.abort().await;
                 continue;
             }
         }
 
-        // Rename tmp to final
-        if let Err(e) = fs::rename(&tmp_path, &dest_path).await {
-            progress.on_error(&entry.usb_path, &format!("Rename error: {}", e));
-            let _ = fs::remove_file(&tmp_path).await;
+        if let Err(e) = writer.commit().await {
+            progress.on_error(&entry.usb_path, &format!("Commit error: {}", e));
             continue;
         }
 
         progress.on_file_done(&entry.usb_path);
     }
 
-    // Optional: cleanup
-    // We could DELETE /exports/{export_id} here or let the user/caller do it
+    // Best-effort server-side cleanup of the staged build.
     let cleanup_url = format!("{}/exports/{}", opts.base_url, opts.export_id);
-    let _ = client.delete(&cleanup_url).header("Authorization", format!("Bearer {}", opts.auth_token)).send().await;
+    let _ = client
+        .delete(&cleanup_url)
+        .header("Authorization", format!("Bearer {}", opts.auth_token))
+        .send()
+        .await;
 
     progress.on_complete();
     Ok(())

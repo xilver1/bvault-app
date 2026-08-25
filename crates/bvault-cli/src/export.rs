@@ -3,7 +3,7 @@ use dialoguer::{theme::ColorfulTheme, Select};
 use sysinfo::Disks;
 use std::path::PathBuf;
 use std::sync::Arc;
-use bvault_transfer::{reconcile_export, ReconcileOptions};
+use bvault_transfer::{reconcile_export, saf, ReconcileOptions, UsbTarget};
 use crate::client::{load_session, get_api_url};
 use crate::tui::ExportProgress;
 use serde::Deserialize;
@@ -24,90 +24,38 @@ pub async fn run_export_flow(playlist_name: &str, usb: bool, path: Option<String
         anyhow::bail!("You must specify either --usb or --path");
     }
 
-    let usb_root = if let Some(p) = path {
-        // Tier 3: Manual Fallback
-        PathBuf::from(p)
-    } else {
-        // We have --usb flag, auto-detect
-        let termux_storage_path = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("storage");
-        
-        if termux_storage_path.exists() && termux_storage_path.is_dir() {
-            // Tier 1: Termux Auto-Detection
-            let mut items = vec![];
-            let mut paths = vec![];
+    // Resolve *where* we write. Three cases:
+    //   --path        -> a literal filesystem path (works everywhere)
+    //   --usb, phone  -> Android SAF: pick a granted tree, scrub Android's junk
+    //   --usb, desktop-> a removable mount discovered via sysinfo
+    let target = resolve_target(path).await?;
 
-            let entries = std::fs::read_dir(&termux_storage_path)?;
-            for entry in entries.flatten() {
-                if entry.file_type().is_ok() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    items.push(format!("Android Storage: {}", name));
-                    paths.push(entry.path());
-                }
-            }
-
-            if items.is_empty() {
-                anyhow::bail!("Termux storage found, but no drives are mapped! Did you run `termux-setup-storage`?");
-            }
-
-            let selection = Select::with_theme(&ColorfulTheme::default())
-                .with_prompt("Choose your Termux drive:")
-                .default(0)
-                .items(&items)
-                .interact()?;
-
-            let chosen_drive = paths[selection].clone();
-            // Append Android's strict allowed write path for Termux
-            chosen_drive.join("Android/data/com.termux/files")
-        } else {
-            // Tier 2: Desktop Auto-Detection (sysinfo)
-            let disks = Disks::new_with_refreshed_list();
-            let removable: Vec<_> = disks.iter().filter(|d| d.is_removable()).collect();
-            
-            if removable.is_empty() {
-                anyhow::bail!("No removable USB devices found!");
-            }
-
-            let items: Vec<String> = removable
-                .iter()
-                .map(|d| format!("{} - {:?}", d.mount_point().display(), d.name()))
-                .collect();
-
-            let selection = Select::with_theme(&ColorfulTheme::default())
-                .with_prompt("Choose your USB device:")
-                .default(0)
-                .items(&items)
-                .interact()?;
-
-            removable[selection].mount_point().to_path_buf()
-        }
-    };
-    
-    println!("✓ {} Chosen", usb_root.display());
+    if let UsbTarget::Fs { root } = &target {
+        println!("✓ {} Chosen", root.display());
+    }
 
     println!("⠋ resolving playlist '{}'...", playlist_name);
-    
+
     let http = Client::new();
-    
+
     // Let's fetch all playlists to find the ID
     let playlists_res = http.get(&format!("{}/playlists", base_url))
         .header("Authorization", format!("Bearer {}", session.token))
         .send().await?;
-        
+
     #[derive(Deserialize)]
     struct Playlist {
         id: Uuid,
         name: String,
     }
-    
+
     let playlists: Vec<Playlist> = playlists_res.json().await.unwrap_or_default();
     let pl_id = playlists.into_iter().find(|p| p.name == playlist_name)
         .map(|p| p.id)
         .context(format!("Playlist '{}' not found", playlist_name))?;
 
     println!("⠋ building rekordbox layout (PDB + ANLZ)…");
-    
+
     let export_payload = serde_json::json!({
         "playlist_ids": [pl_id]
     });
@@ -122,7 +70,7 @@ pub async fn run_export_flow(playlist_name: &str, usb: bool, path: Option<String
     }
 
     let build_data: CreateExportResponse = build_res.json().await?;
-    
+
     println!("✓ Build ready. Starting transfer...");
 
     let progress = Arc::new(ExportProgress::new());
@@ -130,23 +78,110 @@ pub async fn run_export_flow(playlist_name: &str, usb: bool, path: Option<String
     let opts = ReconcileOptions {
         base_url,
         export_id: build_data.export_id.to_string(),
-        usb_root: usb_root.clone(),
+        target: target.clone(),
         auth_token: session.token.clone(),
     };
 
     reconcile_export(opts, progress).await?;
-    
-    // We need to determine if we used the termux flow
-    let is_termux = usb_root.to_string_lossy().contains("com.termux");
 
-    if is_termux {
-        println!("✓ rekordbox USB written to Android app storage!");
-        println!("  IMPORTANT: Android 11+ prevents writing directly to the root of your USB drive.");
-        println!("  Please open your Android File Manager (e.g. Solid Explorer) and MOVE the 'PIONEER' and 'Contents' folders");
-        println!("  from {} to the absolute root of your USB drive before plugging it into a CDJ.", usb_root.display());
-    } else {
-        println!("✓ rekordbox USB written — plug into any CDJ");
+    match target {
+        UsbTarget::Saf { .. } => {
+            println!("✓ rekordbox export written straight to the USB root — plug into any CDJ");
+        }
+        UsbTarget::Fs { .. } => {
+            println!("✓ rekordbox USB written — plug into any CDJ");
+        }
     }
 
     Ok(())
+}
+
+/// Decide the write target from the flags and the runtime environment.
+async fn resolve_target(path: Option<String>) -> Result<UsbTarget> {
+    if let Some(p) = path {
+        // Tier 3: explicit path — trusted verbatim on every platform.
+        return Ok(UsbTarget::Fs { root: PathBuf::from(p) });
+    }
+
+    if saf::detect() {
+        // Tier 1: Android/Termux. The USB is unreachable through the normal
+        // filesystem; go through the Storage Access Framework.
+        resolve_saf_target().await
+    } else {
+        // Tier 2: desktop — a removable mount.
+        resolve_desktop_target()
+    }
+}
+
+/// Desktop USB pick via sysinfo's removable-disk enumeration.
+fn resolve_desktop_target() -> Result<UsbTarget> {
+    let disks = Disks::new_with_refreshed_list();
+    let removable: Vec<_> = disks.iter().filter(|d| d.is_removable()).collect();
+
+    if removable.is_empty() {
+        anyhow::bail!("No removable USB devices found!");
+    }
+
+    let items: Vec<String> = removable
+        .iter()
+        .map(|d| format!("{} - {:?}", d.mount_point().display(), d.name()))
+        .collect();
+
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Choose your USB device:")
+        .default(0)
+        .items(&items)
+        .interact()?;
+
+    Ok(UsbTarget::Fs {
+        root: removable[selection].mount_point().to_path_buf(),
+    })
+}
+
+/// Android SAF pick: choose (or grant) a directory tree, then remove the empty
+/// folders Android auto-creates on a freshly plugged USB.
+async fn resolve_saf_target() -> Result<UsbTarget> {
+    // 1. Pick a granted tree, offering to open the system picker for a new one.
+    let chosen = loop {
+        let mut trees = saf::list_managed_dirs().await?;
+
+        let mut items: Vec<String> = trees.iter().map(|d| d.name.clone()).collect();
+        let grant_idx = items.len();
+        items.push("➕ Grant a new directory (open the Android picker)…".to_string());
+
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Choose your USB drive")
+            .default(0)
+            .items(&items)
+            .interact()?;
+
+        if selection == grant_idx {
+            println!("  Opening the Android folder picker — select your USB's root and allow access.");
+            saf::manage_dir().await?;
+            continue;
+        }
+
+        break trees.swap_remove(selection);
+    };
+
+    println!("✓ {} Chosen", chosen.name);
+    let tree_uri = chosen.uri;
+
+    // 2. Scrub Android's auto-created empties. A same-named folder that already
+    //    holds files is the user's, and is left untouched.
+    for junk in ["LOST.DIR", "Movies", "Music", "Pictures"] {
+        match saf::is_empty(&tree_uri, junk).await {
+            Ok(true) => {
+                if saf::remove(&tree_uri, junk).await.is_ok() {
+                    println!("  · removed Android-created '{}'", junk);
+                }
+            }
+            Ok(false) => {
+                println!("  · kept '{}' — it already contains files", junk);
+            }
+            Err(_) => {}
+        }
+    }
+
+    Ok(UsbTarget::Saf { tree_uri })
 }
