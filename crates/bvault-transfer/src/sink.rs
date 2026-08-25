@@ -6,30 +6,41 @@
 //!   the write-tmp-then-rename+fsync dance for crash safety.
 //! - [`UsbSink::Saf`] — Android's Storage Access Framework, driven by the
 //!   `termux-saf-*` utilities from the `termux-api` package. On a phone Termux
-//!   cannot touch a plugged-in USB through the normal filesystem at all; every
-//!   directory create, delete and file write goes through a `termux-saf-*`
-//!   subprocess against a persisted *tree URI*.
+//!   cannot touch a plugged-in USB through the normal filesystem at all.
 //!
-//! ## SAF command contract
-//! All `termux-saf-*` calls here take `(<tree-uri> <relative-path>)`, where the
-//! relative path is `/`-separated and rooted at the granted tree. This matches
-//! the utility set exposed once `pkg install termux-api` is present. The command
-//! strings are centralised in [`saf`] so a signature tweak is a one-line change.
+//! ## SAF command contract (important)
+//! The `termux-saf-*` utilities are **URI-addressed and single-level**. There is
+//! no path resolution: the second argument is a *display name*, not a relative
+//! path, and a `/` in it is sanitised to `_` by Android's DocumentsContract.
+//! Every document (directory or file) has its own opaque `content://` URI, and
+//! the only way to reach a nested path is to walk it one segment at a time:
 //!
-//! SAF has no atomic rename and no cheap stat, so the SAF backend writes
-//! straight to the final path (removing any stale file first) and reports "file
-//! absent" for every skip check — a phone re-writes the tree every export, which
-//! is correct if slower than the desktop skip-by-size path.
+//! - `termux-saf-ls   <dir-uri>`            -> JSON of the dir's children, each
+//!                                            with its own `uri`.
+//! - `termux-saf-mkdir <parent-uri> <name>` -> create one child directory.
+//! - `termux-saf-write <parent-uri> <name>` -> create+stream a file from stdin.
+//! - `termux-saf-rm    <parent-uri> <name>` -> remove one child.
+//!
+//! So the SAF backend keeps a cache of `relative-dir-path -> uri`, seeded with
+//! `"" -> tree_uri`, and resolves each directory by `ls`-ing the parent and
+//! `mkdir`-ing the missing segment. Files are written into the leaf directory's
+//! URI by name.
+//!
+//! SAF has no atomic rename and no cheap stat, so the backend writes straight to
+//! the final name (removing any stale one first, since SAF would otherwise
+//! create a `name (1)` duplicate) and reports "file absent" for every skip check
+//! — a phone re-writes the tree every export, which is correct if slower than
+//! the desktop skip-by-size path.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Mutex;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use tokio::fs::{self, File};
-use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
+use tokio::process::{Child, ChildStderr, ChildStdin, Command};
 
 /// The resolved write target for an export.
 #[derive(Debug, Clone)]
@@ -51,10 +62,14 @@ impl UsbSink {
     pub fn new(target: UsbTarget) -> Self {
         match target {
             UsbTarget::Fs { root } => UsbSink::Fs(FsSink { root }),
-            UsbTarget::Saf { tree_uri } => UsbSink::Saf(SafSink {
-                tree_uri,
-                ensured: Mutex::new(HashSet::new()),
-            }),
+            UsbTarget::Saf { tree_uri } => {
+                let mut cache = HashMap::new();
+                cache.insert(String::new(), tree_uri.clone());
+                UsbSink::Saf(SafSink {
+                    tree_uri,
+                    dir_uris: Mutex::new(cache),
+                })
+            }
         }
     }
 
@@ -62,7 +77,7 @@ impl UsbSink {
     pub async fn ensure_dir(&self, rel: &str) -> Result<()> {
         match self {
             UsbSink::Fs(s) => s.ensure_dir(rel).await,
-            UsbSink::Saf(s) => s.ensure_dir(rel).await,
+            UsbSink::Saf(s) => s.ensure_dir_uri(rel).await.map(|_| ()),
         }
     }
 
@@ -77,8 +92,7 @@ impl UsbSink {
     }
 
     /// Begin writing the file at `rel`; stream bytes into the returned writer,
-    /// then `commit()` (or `abort()` on error). The parent directory must
-    /// already exist — call [`ensure_dir`](Self::ensure_dir) first.
+    /// then `commit()` (or `abort()` on error).
     pub async fn create(&self, rel: &str) -> Result<UsbFileWriter> {
         match self {
             UsbSink::Fs(s) => Ok(UsbFileWriter::Fs(s.create(rel).await?)),
@@ -188,46 +202,86 @@ impl FsWriter {
 
 pub struct SafSink {
     tree_uri: String,
-    /// Directory prefixes already `mkdir`-ed this run, so we don't re-spawn a
-    /// subprocess for every file that lands in the same folder.
-    ensured: Mutex<HashSet<String>>,
+    /// `relative-dir-path -> content:// uri`, seeded with `"" -> tree_uri`. Built
+    /// up as we walk, so each directory is resolved/created at most once.
+    dir_uris: Mutex<HashMap<String, String>>,
 }
 
 impl SafSink {
-    async fn ensure_dir(&self, rel: &str) -> Result<()> {
-        if rel.is_empty() {
-            return Ok(());
+    fn cache_get(&self, rel: &str) -> Option<String> {
+        self.dir_uris.lock().unwrap().get(rel).cloned()
+    }
+
+    fn cache_put(&self, rel: &str, uri: &str) {
+        self.dir_uris
+            .lock()
+            .unwrap()
+            .insert(rel.to_string(), uri.to_string());
+    }
+
+    /// Resolve (creating as needed) the URI of the `/`-separated directory
+    /// `rel`, walking one segment at a time from the tree root.
+    async fn ensure_dir_uri(&self, rel: &str) -> Result<String> {
+        if let Some(u) = self.cache_get(rel) {
+            return Ok(u);
         }
-        // Build cumulative prefixes: a/b/c -> [a, a/b, a/b/c]. mkdir each,
-        // tolerating "already exists", so we work whether or not the wrapper
-        // creates intermediates itself.
-        let mut prefix = String::new();
+
+        let mut parent_rel = String::new();
+        let mut parent_uri = self.tree_uri.clone();
+
         for seg in rel.split('/').filter(|s| !s.is_empty()) {
-            if !prefix.is_empty() {
-                prefix.push('/');
+            let child_rel = if parent_rel.is_empty() {
+                seg.to_string()
+            } else {
+                format!("{parent_rel}/{seg}")
+            };
+
+            if let Some(u) = self.cache_get(&child_rel) {
+                parent_uri = u;
+                parent_rel = child_rel;
+                continue;
             }
-            prefix.push_str(seg);
-            {
-                let mut set = self.ensured.lock().unwrap();
-                if set.contains(&prefix) {
-                    continue;
+
+            // Does the segment already exist under this parent? (Re-exports, and
+            // Android's own folders.) List first so we never create a duplicate.
+            let children = saf::ls(&parent_uri).await?;
+            let uri = match children.into_iter().find(|e| e.name == seg) {
+                Some(e) => e.uri,
+                None => {
+                    // Create it, then take the URI mkdir printed, or find it.
+                    match saf::mkdir(&parent_uri, seg).await? {
+                        Some(u) => u,
+                        None => saf::ls(&parent_uri)
+                            .await?
+                            .into_iter()
+                            .find(|e| e.name == seg)
+                            .map(|e| e.uri)
+                            .ok_or_else(|| {
+                                anyhow!("created directory '{seg}' but could not resolve its URI")
+                            })?,
+                    }
                 }
-                set.insert(prefix.clone());
-            }
-            // Idempotent: a mkdir over an existing dir is a no-op we ignore.
-            let _ = saf::mkdir(&self.tree_uri, &prefix).await;
+            };
+
+            self.cache_put(&child_rel, &uri);
+            parent_uri = uri;
+            parent_rel = child_rel;
         }
-        Ok(())
+
+        Ok(parent_uri)
     }
 
     async fn create(&self, rel: &str) -> Result<SafWriter> {
-        // Guarantee clean overwrite semantics regardless of how the wrapper
-        // treats an existing target: drop any stale file first.
-        let _ = saf::remove(&self.tree_uri, rel).await;
+        let (parent_rel, name) = split_parent(rel);
+        let parent_uri = self.ensure_dir_uri(parent_rel).await?;
+
+        // SAF's createDocument would make a "name (1)" duplicate if the target
+        // already exists, so drop any stale file first (no-op if absent).
+        let _ = saf::rm(&parent_uri, name).await;
 
         let mut child = Command::new("termux-saf-write")
-            .arg(&self.tree_uri)
-            .arg(rel)
+            .arg(&parent_uri)
+            .arg(name)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -237,11 +291,14 @@ impl SafSink {
             .stdin
             .take()
             .context("termux-saf-write gave no stdin handle")?;
+        let stderr = child.stderr.take();
+
         Ok(SafWriter {
             child,
             stdin: Some(stdin),
-            tree_uri: self.tree_uri.clone(),
-            rel: rel.to_string(),
+            stderr,
+            parent_uri,
+            name: name.to_string(),
         })
     }
 }
@@ -249,35 +306,54 @@ impl SafSink {
 pub struct SafWriter {
     child: Child,
     stdin: Option<ChildStdin>,
-    tree_uri: String,
-    rel: String,
+    stderr: Option<ChildStderr>,
+    parent_uri: String,
+    name: String,
 }
 
 impl SafWriter {
     async fn write_all(&mut self, buf: &[u8]) -> Result<()> {
-        let stdin = self
-            .stdin
-            .as_mut()
-            .context("termux-saf-write stdin already closed")?;
-        stdin
-            .write_all(buf)
-            .await
-            .context("piping to termux-saf-write")
+        // Take the handle out so we can also touch `self` (stderr) on error
+        // without a double mutable borrow.
+        let mut stdin = match self.stdin.take() {
+            Some(s) => s,
+            None => bail!("termux-saf-write stdin already closed"),
+        };
+        match stdin.write_all(buf).await {
+            Ok(()) => {
+                self.stdin = Some(stdin);
+                Ok(())
+            }
+            // A broken pipe means the helper already died — surface its stderr
+            // instead of the meaningless "broken pipe".
+            Err(e) => {
+                drop(stdin);
+                let detail = self.drain_stderr().await;
+                Err(anyhow!(
+                    "termux-saf-write '{}' failed ({e}){}",
+                    self.name,
+                    detail
+                ))
+            }
+        }
     }
 
     async fn commit(mut self) -> Result<()> {
         // Close stdin so termux-saf-write sees EOF and finalises the document.
         if let Some(mut stdin) = self.stdin.take() {
-            stdin.shutdown().await.context("closing termux-saf-write stdin")?;
+            stdin
+                .shutdown()
+                .await
+                .context("closing termux-saf-write stdin")?;
         }
-        let out = self
+        let status = self
             .child
-            .wait_with_output()
+            .wait()
             .await
             .context("waiting on termux-saf-write")?;
-        if !out.status.success() {
-            let err = String::from_utf8_lossy(&out.stderr);
-            bail!("termux-saf-write failed for {}: {}", self.rel, err.trim());
+        if !status.success() {
+            let detail = self.drain_stderr().await;
+            bail!("termux-saf-write '{}' failed{}", self.name, detail);
         }
         Ok(())
     }
@@ -286,14 +362,41 @@ impl SafWriter {
         drop(self.stdin.take());
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
-        let _ = saf::remove(&self.tree_uri, &self.rel).await;
+        let _ = saf::rm(&self.parent_uri, &self.name).await;
+    }
+
+    /// Best-effort read of the helper's stderr, as `": <text>"` or empty.
+    async fn drain_stderr(&mut self) -> String {
+        if let Some(mut e) = self.stderr.take() {
+            let mut s = String::new();
+            let _ = e.read_to_string(&mut s).await;
+            let s = s.trim();
+            if !s.is_empty() {
+                return format!(": {s}");
+            }
+        }
+        String::new()
+    }
+}
+
+/// Split a `/`-separated USB path into `(parent_dir, file_name)`.
+fn split_parent(rel: &str) -> (&str, &str) {
+    match rel.rfind('/') {
+        Some(i) => (&rel[..i], &rel[i + 1..]),
+        None => ("", rel),
     }
 }
 
 /// Thin wrappers over the `termux-saf-*` CLI, plus the selection/cleanup helpers
-/// the client needs before a transfer. Every call is `(<tree-uri> <rel-path>)`.
+/// the client needs before a transfer.
+///
+/// Argument shape is always URI-addressed and single-level:
+///   * `ls    <dir-uri>`
+///   * `mkdir <parent-uri> <name>`
+///   * `rm    <parent-uri> <name>`
+///   * `write <parent-uri> <name>` (stdin)
 pub mod saf {
-    use anyhow::{bail, Context, Result};
+    use anyhow::{anyhow, bail, Context, Result};
     use serde::Deserialize;
     use tokio::process::Command;
 
@@ -304,11 +407,12 @@ pub mod saf {
         pub uri: String,
     }
 
-    /// A child entry, as reported by `termux-saf-ls`.
+    /// A child entry, as reported by `termux-saf-ls`. Extra keys (`type`,
+    /// `last_modified`, ...) are ignored.
     #[derive(Debug, Clone, Deserialize)]
-    struct SafEntry {
-        #[allow(dead_code)]
-        name: String,
+    pub(super) struct SafEntry {
+        pub name: String,
+        pub uri: String,
     }
 
     /// True when we're running inside Termux on Android, where the SAF backend
@@ -353,63 +457,83 @@ pub mod saf {
         Ok(())
     }
 
-    /// Whether `rel` under `tree_uri` is empty or absent — i.e. safe to treat as
-    /// Android-generated junk. Returns `true` for an empty listing (`[]`) and for
-    /// a missing directory; `false` if it holds anything.
-    pub async fn is_empty(tree_uri: &str, rel: &str) -> Result<bool> {
+    /// List a directory's immediate children by its URI.
+    pub(super) async fn ls(dir_uri: &str) -> Result<Vec<SafEntry>> {
         let out = Command::new("termux-saf-ls")
-            .arg(tree_uri)
-            .arg(rel)
+            .arg(dir_uri)
             .output()
             .await
             .context("running termux-saf-ls")?;
         if !out.status.success() {
-            // A non-existent directory isn't an error worth surfacing here.
-            return Ok(true);
+            bail!(
+                "termux-saf-ls failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
         }
         let text = String::from_utf8_lossy(&out.stdout);
         let trimmed = text.trim();
         if trimmed.is_empty() {
-            return Ok(true);
+            return Ok(Vec::new());
         }
-        match serde_json::from_str::<Vec<SafEntry>>(trimmed) {
-            Ok(entries) => Ok(entries.is_empty()),
-            // Unparseable output: be conservative and treat as non-empty.
-            Err(_) => Ok(false),
-        }
+        serde_json::from_str(trimmed).context("parsing termux-saf-ls JSON")
     }
 
-    /// Remove `rel` under `tree_uri` (`termux-saf-rm`).
-    pub async fn remove(tree_uri: &str, rel: &str) -> Result<()> {
-        let out = Command::new("termux-saf-rm")
-            .arg(tree_uri)
-            .arg(rel)
-            .output()
-            .await
-            .context("running termux-saf-rm")?;
-        if !out.status.success() {
-            bail!(
-                "termux-saf-rm {rel} failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        Ok(())
-    }
-
-    /// Create `rel` under `tree_uri` (`termux-saf-mkdir`).
-    pub(super) async fn mkdir(tree_uri: &str, rel: &str) -> Result<()> {
+    /// Create one child directory `name` under `parent_uri`. Returns the new
+    /// directory's URI if the helper prints it, else `None` (caller re-`ls`es).
+    pub(super) async fn mkdir(parent_uri: &str, name: &str) -> Result<Option<String>> {
         let out = Command::new("termux-saf-mkdir")
-            .arg(tree_uri)
-            .arg(rel)
+            .arg(parent_uri)
+            .arg(name)
             .output()
             .await
             .context("running termux-saf-mkdir")?;
         if !out.status.success() {
             bail!(
-                "termux-saf-mkdir {rel} failed: {}",
+                "termux-saf-mkdir '{name}' failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let uri = stdout
+            .lines()
+            .map(|l| l.trim())
+            .find(|l| l.starts_with("content://"))
+            .map(|l| l.to_string());
+        Ok(uri)
+    }
+
+    /// Remove one child `name` under `parent_uri` (`termux-saf-rm`).
+    pub(super) async fn rm(parent_uri: &str, name: &str) -> Result<()> {
+        let out = Command::new("termux-saf-rm")
+            .arg(parent_uri)
+            .arg(name)
+            .output()
+            .await
+            .context("running termux-saf-rm")?;
+        if !out.status.success() {
+            bail!(
+                "termux-saf-rm '{name}' failed: {}",
                 String::from_utf8_lossy(&out.stderr).trim()
             );
         }
         Ok(())
+    }
+
+    /// Whether `name` under `tree_uri` is an empty directory — i.e. safe to treat
+    /// as Android-generated junk. `Err` when the folder is absent or unreadable,
+    /// so the caller silently skips it.
+    pub async fn is_empty(tree_uri: &str, name: &str) -> Result<bool> {
+        let child = ls(tree_uri)
+            .await?
+            .into_iter()
+            .find(|e| e.name == name)
+            .ok_or_else(|| anyhow!("'{name}' not present"))?;
+        let inner = ls(&child.uri).await?;
+        Ok(inner.is_empty())
+    }
+
+    /// Remove `name` under `tree_uri` (`termux-saf-rm`).
+    pub async fn remove(tree_uri: &str, name: &str) -> Result<()> {
+        rm(tree_uri, name).await
     }
 }
