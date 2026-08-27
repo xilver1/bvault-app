@@ -2,12 +2,12 @@ use anyhow::Result;
 use reqwest::Client;
 use serde::Deserialize;
 
-use crate::client::{get_api_url, load_session, get_config_dir};
+use crate::client::{get_api_url, get_config_dir, load_session};
+use crate::StatusCommands;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
 use std::time::Duration;
 use tokio::time::sleep;
-use indicatif::{ProgressBar, ProgressStyle};
-use crate::StatusCommands;
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -101,17 +101,17 @@ async fn run_global_status() -> Result<()> {
 async fn run_ingest_status() -> Result<()> {
     let mut state_path = get_config_dir();
     state_path.push("last_ingest.json");
-    
+
     let content = match fs::read_to_string(&state_path) {
         Ok(c) => c,
         Err(_) => {
             anyhow::bail!("No background ingest operation found.");
         }
     };
-    
+
     let state: LastIngestState = serde_json::from_str(&content)?;
     let job_ids = state.job_ids;
-    
+
     if job_ids.is_empty() {
         println!("Background ingest batch is empty.");
         return Ok(());
@@ -120,27 +120,33 @@ async fn run_ingest_status() -> Result<()> {
     let session = load_session()?;
     let base_url = get_api_url();
     let http = Client::new();
-    
+
     println!("Resuming tracking for {} background jobs...", job_ids.len());
     let pb_batch = ProgressBar::new(job_ids.len() as u64);
-    pb_batch.set_style(ProgressStyle::default_bar()
-        .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({msg})")
-        .unwrap()
-        .progress_chars("#>-"));
+    pb_batch.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({msg})")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
 
     let mut completed_jobs = std::collections::HashSet::new();
     let mut failed = 0;
-    
+
     loop {
         if completed_jobs.len() == job_ids.len() {
             break;
         }
         let mut progress_made = false;
         for &jid in &job_ids {
-            if completed_jobs.contains(&jid) { continue; }
-            let res = http.get(format!("{}/jobs/{}", base_url, jid))
+            if completed_jobs.contains(&jid) {
+                continue;
+            }
+            let res = http
+                .get(format!("{}/jobs/{}", base_url, jid))
                 .header("Authorization", format!("Bearer {}", session.token))
-                .send().await;
+                .send()
+                .await;
             if let Ok(r) = res {
                 if let Ok(status) = r.json::<JobStatusResponse>().await {
                     match status.status.as_str() {
@@ -166,7 +172,7 @@ async fn run_ingest_status() -> Result<()> {
         }
     }
     pb_batch.finish_with_message(format!("Batch complete. {} failed.", failed));
-    
+
     // Cleanup state file after completion
     let _ = fs::remove_file(state_path);
     Ok(())
@@ -179,15 +185,19 @@ async fn run_analysis_status() -> Result<()> {
 
     println!("Monitoring global analysis queue...");
     let pb = ProgressBar::new(100);
-    pb.set_style(ProgressStyle::default_bar()
-        .template("[{elapsed_precise}] [{bar:40.magenta/blue}] {pos}/{len} ({msg})")
-        .unwrap()
-        .progress_chars("#>-"));
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] [{bar:40.magenta/blue}] {pos}/{len} ({msg})")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
 
     loop {
-        let res = http.get(&format!("{}/status", base_url))
+        let res = http
+            .get(&format!("{}/status", base_url))
             .header("Authorization", format!("Bearer {}", session.token))
-            .send().await?;
+            .send()
+            .await?;
 
         if !res.status().is_success() {
             anyhow::bail!("Failed to get status");
@@ -222,10 +232,17 @@ async fn run_analysis_status() -> Result<()> {
 
         pb.set_length(total as u64);
         pb.set_position(done as u64);
-        pb.set_message(format!("{} pending/running, {} failed", pending + running, failed + dead));
+        pb.set_message(format!(
+            "{} pending/running, {} failed",
+            pending + running,
+            failed + dead
+        ));
 
         if done >= total {
-            pb.finish_with_message(format!("Analysis queue complete. {} failed/dead.", failed + dead));
+            pb.finish_with_message(format!(
+                "Analysis queue complete. {} failed/dead.",
+                failed + dead
+            ));
             break;
         }
 

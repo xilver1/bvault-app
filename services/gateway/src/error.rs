@@ -36,12 +36,13 @@ impl IntoResponse for GatewayError {
         let (status, message) = match self {
             GatewayError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             GatewayError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
-            GatewayError::Unauthorized => {
-                (StatusCode::UNAUTHORIZED, "unauthorized".to_string())
-            }
+            GatewayError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             GatewayError::Internal(detail) => {
                 error!(detail, "internal error");
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string(),
+                )
             }
             // A taken username is an expected, user-caused conflict, not a 500.
             GatewayError::Meta(bvault_meta::Error::UsernameTaken) => {
@@ -50,11 +51,17 @@ impl IntoResponse for GatewayError {
             // Don't leak internals to the client; log them instead.
             GatewayError::Meta(e) => {
                 error!(error = %e, "metadata error");
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string(),
+                )
             }
             GatewayError::Jobs(e) => {
                 error!(error = %e, "queue error");
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string(),
+                )
             }
         };
         (status, Json(json!({ "error": message }))).into_response()

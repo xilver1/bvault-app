@@ -14,14 +14,14 @@
 //!   no attacker dictionary to slow down on an already-uniform 256-bit secret.
 //!   The raw token is shown to the client once and never stored.
 
-use rand_core::{OsRng, RngCore};
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::Argon2;
-use sha2::{Digest, Sha256};
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit},
     Aes256Gcm, Key, Nonce,
 };
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::Argon2;
+use rand_core::{OsRng, RngCore};
+use sha2::{Digest, Sha256};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -90,9 +90,10 @@ fn to_hex(bytes: &[u8]) -> String {
 pub fn encrypt_cookie(plaintext: &str, key: &[u8; 32]) -> Result<Vec<u8>> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng); // 96-bits; unique per message
-    let ciphertext = cipher.encrypt(&nonce, plaintext.as_bytes())
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext.as_bytes())
         .map_err(|e| Error::Encryption(e.to_string()))?;
-    
+
     // Prepend nonce to ciphertext
     let mut payload = nonce.to_vec();
     payload.extend(ciphertext);
@@ -107,10 +108,11 @@ pub fn decrypt_cookie(payload: &[u8], key: &[u8; 32]) -> Result<String> {
     let (nonce_bytes, ciphertext) = payload.split_at(12);
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let nonce = Nonce::from_slice(nonce_bytes);
-    
-    let plaintext = cipher.decrypt(nonce, ciphertext)
+
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
         .map_err(|e| Error::Decryption(e.to_string()))?;
-        
+
     String::from_utf8(plaintext).map_err(|_| Error::Decryption("invalid utf8".into()))
 }
 
@@ -130,7 +132,10 @@ mod tests {
     fn hash_is_argon2id_and_salted() {
         let h1 = hash_password("same").unwrap();
         let h2 = hash_password("same").unwrap();
-        assert!(h1.starts_with("$argon2id$"), "expected argon2id PHC, got {h1}");
+        assert!(
+            h1.starts_with("$argon2id$"),
+            "expected argon2id PHC, got {h1}"
+        );
         assert_ne!(h1, h2, "random salt should make each hash unique");
     }
 

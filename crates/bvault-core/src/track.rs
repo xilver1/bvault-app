@@ -96,23 +96,23 @@ impl Key {
             is_major,
         }
     }
-    
+
     /// Convert to Camelot wheel notation (1A-12B)
     pub fn to_camelot(&self) -> String {
         // Camelot mapping: minor keys are 'A', major keys are 'B'
         let camelot_map_minor = [5, 12, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10]; // Am=5A, etc.
         let camelot_map_major = [8, 3, 10, 5, 12, 7, 2, 9, 4, 11, 6, 1]; // C=8B, etc.
-        
+
         let pos = if self.is_major {
             camelot_map_major[self.pitch_class as usize]
         } else {
             camelot_map_minor[self.pitch_class as usize]
         };
-        
+
         let suffix = if self.is_major { "B" } else { "A" };
         format!("{}{}", pos, suffix)
     }
-    
+
     /// Convert to Rekordbox's internal key ID (1-24)
     /// Based on observed export.pdb values
     pub fn to_rekordbox_id(&self) -> u8 {
@@ -127,17 +127,20 @@ impl Key {
             id
         }
     }
-    
+
     /// Create a Key from Rekordbox's internal key ID (1-24)
     /// Inverse of to_rekordbox_id()
     pub fn from_rekordbox_id(id: u8) -> Self {
         // Inverse mapping: rekordbox_id -> pitch_class
         // Index 0 is unused, 1-12 are minor keys, 13-24 are major keys
         let inverse_map: [u8; 13] = [0, 0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5];
-        
+
         if id == 0 {
             // No key
-            Self { pitch_class: 0, is_major: false }
+            Self {
+                pitch_class: 0,
+                is_major: false,
+            }
         } else if id <= 12 {
             // Minor key
             Self {
@@ -152,13 +155,18 @@ impl Key {
             }
         } else {
             // Invalid ID, return C minor as fallback
-            Self { pitch_class: 0, is_major: false }
+            Self {
+                pitch_class: 0,
+                is_major: false,
+            }
         }
     }
-    
+
     /// Get the key name (e.g., "Am", "C")
     pub fn name(&self) -> String {
-        let note_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+        let note_names = [
+            "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+        ];
         let note = note_names[self.pitch_class as usize];
         if self.is_major {
             note.to_string()
@@ -264,14 +272,54 @@ pub struct HotCueColor {
 
 impl HotCueColor {
     /// Standard hot cue colors with their palette indices
-    pub const GREEN: HotCueColor = HotCueColor { palette_index: 0x00, red: 0x28, green: 0xE2, blue: 0x14 };
-    pub const CYAN: HotCueColor = HotCueColor { palette_index: 0x09, red: 0x00, green: 0xE0, blue: 0xFF };
-    pub const BLUE: HotCueColor = HotCueColor { palette_index: 0x11, red: 0x00, green: 0x50, blue: 0xFF };
-    pub const PURPLE: HotCueColor = HotCueColor { palette_index: 0x3E, red: 0x64, green: 0x73, blue: 0xFF };
-    pub const PINK: HotCueColor = HotCueColor { palette_index: 0x1A, red: 0xFF, green: 0x00, blue: 0xC8 };
-    pub const RED: HotCueColor = HotCueColor { palette_index: 0x2A, red: 0xE6, green: 0x28, blue: 0x28 };
-    pub const ORANGE: HotCueColor = HotCueColor { palette_index: 0x22, red: 0xFF, green: 0xA0, blue: 0x00 };
-    pub const YELLOW: HotCueColor = HotCueColor { palette_index: 0x32, red: 0xFF, green: 0xFF, blue: 0x00 };
+    pub const GREEN: HotCueColor = HotCueColor {
+        palette_index: 0x00,
+        red: 0x28,
+        green: 0xE2,
+        blue: 0x14,
+    };
+    pub const CYAN: HotCueColor = HotCueColor {
+        palette_index: 0x09,
+        red: 0x00,
+        green: 0xE0,
+        blue: 0xFF,
+    };
+    pub const BLUE: HotCueColor = HotCueColor {
+        palette_index: 0x11,
+        red: 0x00,
+        green: 0x50,
+        blue: 0xFF,
+    };
+    pub const PURPLE: HotCueColor = HotCueColor {
+        palette_index: 0x3E,
+        red: 0x64,
+        green: 0x73,
+        blue: 0xFF,
+    };
+    pub const PINK: HotCueColor = HotCueColor {
+        palette_index: 0x1A,
+        red: 0xFF,
+        green: 0x00,
+        blue: 0xC8,
+    };
+    pub const RED: HotCueColor = HotCueColor {
+        palette_index: 0x2A,
+        red: 0xE6,
+        green: 0x28,
+        blue: 0x28,
+    };
+    pub const ORANGE: HotCueColor = HotCueColor {
+        palette_index: 0x22,
+        red: 0xFF,
+        green: 0xA0,
+        blue: 0x00,
+    };
+    pub const YELLOW: HotCueColor = HotCueColor {
+        palette_index: 0x32,
+        red: 0xFF,
+        green: 0xFF,
+        blue: 0x00,
+    };
 
     /// Get default color for a hot cue slot (A-H)
     pub fn default_for_slot(slot: u8) -> Self {
@@ -393,7 +441,7 @@ impl WaveformColumn {
     pub fn to_byte(&self) -> u8 {
         ((self.whiteness & 0x07) << 5) | (self.height & 0x1F)
     }
-    
+
     /// Decode from PWAV byte
     pub fn from_byte(byte: u8) -> Self {
         Self {
@@ -428,14 +476,13 @@ impl WaveformColorEntry {
     /// Encode to PWV5 2-byte format (big-endian for ANLZ)
     /// Bits 15-13: red, 12-10: green, 9-7: blue, 6-2: height, 1-0: unused
     pub fn to_bytes(&self) -> [u8; 2] {
-        let value: u16 = 
-            ((self.red as u16 & 0x07) << 13) |
-            ((self.green as u16 & 0x07) << 10) |
-            ((self.blue as u16 & 0x07) << 7) |
-            ((self.height as u16 & 0x1F) << 2);
+        let value: u16 = ((self.red as u16 & 0x07) << 13)
+            | ((self.green as u16 & 0x07) << 10)
+            | ((self.blue as u16 & 0x07) << 7)
+            | ((self.height as u16 & 0x1F) << 2);
         value.to_be_bytes() // ANLZ files are big-endian
     }
-    
+
     /// Decode from PWV5 bytes
     pub fn from_bytes(bytes: [u8; 2]) -> Self {
         let value = u16::from_be_bytes(bytes);
@@ -451,7 +498,7 @@ impl WaveformColorEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_key_camelot() {
         // A minor = 8A (relative minor of C major)
@@ -466,18 +513,18 @@ mod tests {
         let cm = Key::new(0, false);
         assert_eq!(cm.to_camelot(), "5A");
     }
-    
+
     #[test]
     fn test_key_rekordbox_id() {
         // C minor should be 1
         let cm = Key::new(0, false);
         assert_eq!(cm.to_rekordbox_id(), 1);
-        
+
         // C major should be 13
         let c = Key::new(0, true);
         assert_eq!(c.to_rekordbox_id(), 13);
     }
-    
+
     #[test]
     fn test_waveform_encoding() {
         let entry = WaveformColorEntry {
@@ -493,7 +540,7 @@ mod tests {
         assert_eq!(entry.blue, decoded.blue);
         assert_eq!(entry.height, decoded.height);
     }
-    
+
     #[test]
     fn test_beat_grid_generation() {
         let grid = BeatGrid::constant_tempo(128.0, 100.0, 10_000.0);
@@ -503,7 +550,7 @@ mod tests {
         assert_eq!(grid.beats[0].beat_number, 1);
         assert_eq!(grid.beats[0].tempo_100, 12800);
     }
-    
+
     #[test]
     fn test_file_type_from_extension() {
         assert_eq!(FileType::from_extension("mp3"), FileType::Mp3);

@@ -7,11 +7,12 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 use oauth2::{
-    basic::BasicClient, AuthUrl, ClientId, ClientSecret, CsrfToken, RedirectUrl, Scope, TokenResponse, TokenUrl,
+    basic::BasicClient, AuthUrl, ClientId, ClientSecret, CsrfToken, RedirectUrl, Scope,
+    TokenResponse, TokenUrl,
 };
 use tiny_http::{Response, Server};
 
-use crate::client::{get_api_url, load_session, get_config_dir};
+use crate::client::{get_api_url, get_config_dir, load_session};
 use std::fs;
 
 #[derive(Deserialize)]
@@ -91,26 +92,36 @@ struct YTResourceId {
     video_id: String,
 }
 
-pub async fn run_youtube_ingest(query: Option<&str>, login: bool, playlists: bool, bg: bool) -> Result<()> {
-    let session = load_session().context("You are not logged in. Please run `bvault login` first.")?;
+pub async fn run_youtube_ingest(
+    query: Option<&str>,
+    login: bool,
+    playlists: bool,
+    bg: bool,
+) -> Result<()> {
+    let session =
+        load_session().context("You are not logged in. Please run `bvault login` first.")?;
     let base_url = get_api_url();
     let http = Client::new();
 
     if login {
-        let _access_token = google_oauth_flow("https://www.googleapis.com/auth/youtube.readonly").await?;
+        let _access_token =
+            google_oauth_flow("https://www.googleapis.com/auth/youtube.readonly").await?;
         println!("✓ SSO authorization successful! Credentials cached.");
         // TODO: Upload cookies/tokens to the backend yt-dlp-ingest service to fix bot detection.
         return Ok(());
     }
 
     if playlists {
-        let access_token = google_oauth_flow("https://www.googleapis.com/auth/youtube.readonly").await?;
-        
+        let access_token =
+            google_oauth_flow("https://www.googleapis.com/auth/youtube.readonly").await?;
+
         let playlist_id = {
-            let res = http.get("https://www.googleapis.com/youtube/v3/playlists")
+            let res = http
+                .get("https://www.googleapis.com/youtube/v3/playlists")
                 .bearer_auth(&access_token)
                 .query(&[("part", "snippet"), ("mine", "true"), ("maxResults", "50")])
-                .send().await?;
+                .send()
+                .await?;
             if !res.status().is_success() {
                 anyhow::bail!("Failed to fetch YouTube playlists: {}", res.status());
             }
@@ -119,7 +130,10 @@ pub async fn run_youtube_ingest(query: Option<&str>, login: bool, playlists: boo
             if items.is_empty() {
                 anyhow::bail!("No YouTube playlists found on your account.");
             }
-            let display_items: Vec<String> = items.iter().map(|p| format!("{} ({})", p.snippet.title, p.snippet.channel_title)).collect();
+            let display_items: Vec<String> = items
+                .iter()
+                .map(|p| format!("{} ({})", p.snippet.title, p.snippet.channel_title))
+                .collect();
             let selection = Select::with_theme(&ColorfulTheme::default())
                 .with_prompt("Select a YouTube playlist:")
                 .default(0)
@@ -129,42 +143,76 @@ pub async fn run_youtube_ingest(query: Option<&str>, login: bool, playlists: boo
             items[selection].id.clone()
         };
 
-        return ingest_youtube_playlist(&http, &base_url, &session.token, &access_token, &playlist_id, bg).await;
+        return ingest_youtube_playlist(
+            &http,
+            &base_url,
+            &session.token,
+            &access_token,
+            &playlist_id,
+            bg,
+        )
+        .await;
     }
 
-    let query_str = query.context("Please provide a search query, a URL, or use --playlists / --login.")?;
+    let query_str =
+        query.context("Please provide a search query, a URL, or use --playlists / --login.")?;
 
     // Check if it's a playlist URL
     if query_str.contains("list=") {
-        let access_token = google_oauth_flow("https://www.googleapis.com/auth/youtube.readonly").await?;
+        let access_token =
+            google_oauth_flow("https://www.googleapis.com/auth/youtube.readonly").await?;
         let re = regex::Regex::new(r"[?&]list=([^&]+)").unwrap();
-        let caps = re.captures(query_str).context("Invalid YouTube playlist URL (missing list=...)")?;
+        let caps = re
+            .captures(query_str)
+            .context("Invalid YouTube playlist URL (missing list=...)")?;
         let playlist_id = caps.get(1).unwrap().as_str().to_string();
-        return ingest_youtube_playlist(&http, &base_url, &session.token, &access_token, &playlist_id, bg).await;
+        return ingest_youtube_playlist(
+            &http,
+            &base_url,
+            &session.token,
+            &access_token,
+            &playlist_id,
+            bg,
+        )
+        .await;
     }
 
     // Otherwise, treat it as a single video or search query
-    let target_url = if query_str.starts_with("http") || (query_str.len() == 11 && !query_str.contains(' ')) {
-        query_str.to_string()
-    } else {
-        if query_str == "help" {
-            anyhow::bail!("It looks like you meant to type `--help`. Please try again.");
-        }
-        println!("Searching YouTube for: {}", query_str);
-        let res = http.get(format!("{}/search", base_url))
-            .header("Authorization", format!("Bearer {}", session.token))
-            .query(&[("q", query_str), ("limit", "5")]).send().await?;
-        if !res.status().is_success() { anyhow::bail!("Search failed: {}", res.status()); }
-        let results: Vec<SearchResult> = res.json().await?;
-        if results.is_empty() { anyhow::bail!("No results found for '{}'", query_str); }
-        println!("Top results:");
-        let items: Vec<String> = results.iter().map(|r| format!("{} ({})", r.title, r.uploader)).collect();
-        let selection = Select::with_theme(&ColorfulTheme::default())
-            .with_prompt("Choose a track to ingest:").default(0).items(&items).interact()?;
-        let chosen = &results[selection];
-        println!("✓ {} chosen (\"{}\")", chosen.title, chosen.url);
-        chosen.url.clone()
-    };
+    let target_url =
+        if query_str.starts_with("http") || (query_str.len() == 11 && !query_str.contains(' ')) {
+            query_str.to_string()
+        } else {
+            if query_str == "help" {
+                anyhow::bail!("It looks like you meant to type `--help`. Please try again.");
+            }
+            println!("Searching YouTube for: {}", query_str);
+            let res = http
+                .get(format!("{}/search", base_url))
+                .header("Authorization", format!("Bearer {}", session.token))
+                .query(&[("q", query_str), ("limit", "5")])
+                .send()
+                .await?;
+            if !res.status().is_success() {
+                anyhow::bail!("Search failed: {}", res.status());
+            }
+            let results: Vec<SearchResult> = res.json().await?;
+            if results.is_empty() {
+                anyhow::bail!("No results found for '{}'", query_str);
+            }
+            println!("Top results:");
+            let items: Vec<String> = results
+                .iter()
+                .map(|r| format!("{} ({})", r.title, r.uploader))
+                .collect();
+            let selection = Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("Choose a track to ingest:")
+                .default(0)
+                .items(&items)
+                .interact()?;
+            let chosen = &results[selection];
+            println!("✓ {} chosen (\"{}\")", chosen.title, chosen.url);
+            chosen.url.clone()
+        };
 
     let pb = ProgressBar::new_spinner();
     pb.set_style(spinner_style());
@@ -173,11 +221,15 @@ pub async fn run_youtube_ingest(query: Option<&str>, login: bool, playlists: boo
 
     // TODO: Include authentication cookies/tokens when triggering single ingest.
 
-    let res = http.post(format!("{}/ingest/ytdlp", base_url))
+    let res = http
+        .post(format!("{}/ingest/ytdlp", base_url))
         .header("Authorization", format!("Bearer {}", session.token))
-        .json(&serde_json::json!({ "url": target_url })).send().await?;
+        .json(&serde_json::json!({ "url": target_url }))
+        .send()
+        .await?;
     if !res.status().is_success() {
-        let status = res.status(); let _ = res.text().await;
+        let status = res.status();
+        let _ = res.text().await;
         pb.finish_with_message(format!("✗ Ingest failed to start: {}", status));
         anyhow::bail!("ingest failed to start");
     }
@@ -190,14 +242,23 @@ pub async fn run_youtube_ingest(query: Option<&str>, login: bool, playlists: boo
             anyhow::bail!("ingest timed out after 300s");
         }
         sleep(Duration::from_secs(2)).await;
-        let status: JobStatusResponse = http.get(format!("{}/jobs/{}", base_url, accepted.job_id))
+        let status: JobStatusResponse = http
+            .get(format!("{}/jobs/{}", base_url, accepted.job_id))
             .header("Authorization", format!("Bearer {}", session.token))
-            .send().await?.json().await?;
+            .send()
+            .await?
+            .json()
+            .await?;
         match status.status.as_str() {
-            "succeeded" => { pb.finish_with_message("✓ ingested successfully"); break; }
+            "succeeded" => {
+                pb.finish_with_message("✓ ingested successfully");
+                break;
+            }
             "failed" | "dead" => {
-                pb.finish_with_message(format!("✗ Ingest failed: {}",
-                    status.error.unwrap_or_else(|| "unknown error".into())));
+                pb.finish_with_message(format!(
+                    "✗ Ingest failed: {}",
+                    status.error.unwrap_or_else(|| "unknown error".into())
+                ));
                 anyhow::bail!("ingest failed");
             }
             _ => {}
@@ -206,17 +267,25 @@ pub async fn run_youtube_ingest(query: Option<&str>, login: bool, playlists: boo
     Ok(())
 }
 
-async fn ingest_youtube_playlist(http: &Client, base_url: &str, session_token: &str, access_token: &str, playlist_id: &str, bg: bool) -> Result<()> {
+async fn ingest_youtube_playlist(
+    http: &Client,
+    base_url: &str,
+    session_token: &str,
+    access_token: &str,
+    playlist_id: &str,
+    bg: bool,
+) -> Result<()> {
     println!("Fetching videos for playlist ID: {}", playlist_id);
     let mut video_ids = Vec::new();
     let mut page_token: Option<String> = None;
     loop {
-        let mut req = http.get("https://www.googleapis.com/youtube/v3/playlistItems")
+        let mut req = http
+            .get("https://www.googleapis.com/youtube/v3/playlistItems")
             .bearer_auth(access_token)
             .query(&[
-                ("part", "snippet"), 
-                ("playlistId", playlist_id), 
-                ("maxResults", "50")
+                ("part", "snippet"),
+                ("playlistId", playlist_id),
+                ("maxResults", "50"),
             ]);
         if let Some(pt) = &page_token {
             req = req.query(&[("pageToken", pt)]);
@@ -243,11 +312,12 @@ async fn ingest_youtube_playlist(http: &Client, base_url: &str, session_token: &
     if video_ids.is_empty() {
         anyhow::bail!("Playlist is empty or all videos are private/deleted.");
     }
-    
+
     let already_done: std::collections::HashSet<String> = match http
         .get(format!("{}/ingest/ytdlp/completed", base_url))
         .header("Authorization", format!("Bearer {}", session_token))
-        .send().await
+        .send()
+        .await
     {
         Ok(r) if r.status().is_success() => r.json::<Vec<String>>().await.unwrap_or_default(),
         _ => Vec::new(),
@@ -255,14 +325,18 @@ async fn ingest_youtube_playlist(http: &Client, base_url: &str, session_token: &
     .into_iter()
     .collect();
 
-    let to_submit: Vec<String> = video_ids.iter()
+    let to_submit: Vec<String> = video_ids
+        .iter()
         .map(|vid| format!("https://www.youtube.com/watch?v={}", vid))
         .filter(|url| !already_done.contains(url))
         .collect();
 
     let skipped = video_ids.len() - to_submit.len();
     if skipped > 0 {
-        println!("Skipping {} already-ingested video(s) from a previous run.", skipped);
+        println!(
+            "Skipping {} already-ingested video(s) from a previous run.",
+            skipped
+        );
     }
 
     println!("Submitting {} videos for ingestion...", to_submit.len());
@@ -270,9 +344,12 @@ async fn ingest_youtube_playlist(http: &Client, base_url: &str, session_token: &
     let pb_submit = indicatif::ProgressBar::new(to_submit.len() as u64);
     for target_url in &to_submit {
         // TODO: Include authentication cookies/tokens when triggering batch ingest.
-        let res = http.post(format!("{}/ingest/ytdlp", base_url))
+        let res = http
+            .post(format!("{}/ingest/ytdlp", base_url))
             .header("Authorization", format!("Bearer {}", session_token))
-            .json(&serde_json::json!({ "url": target_url })).send().await;
+            .json(&serde_json::json!({ "url": target_url }))
+            .send()
+            .await;
         if let Ok(res) = res {
             if res.status().is_success() {
                 if let Ok(accepted) = res.json::<IngestAccepted>().await {
@@ -296,26 +373,35 @@ async fn ingest_youtube_playlist(http: &Client, base_url: &str, session_token: &
         return Ok(());
     }
 
-    println!("Waiting for {} background jobs to complete...", job_ids.len());
+    println!(
+        "Waiting for {} background jobs to complete...",
+        job_ids.len()
+    );
     let pb_batch = indicatif::ProgressBar::new(job_ids.len() as u64);
-    pb_batch.set_style(ProgressStyle::default_bar()
-        .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({msg})")
-        .unwrap()
-        .progress_chars("#>-"));
+    pb_batch.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({msg})")
+            .unwrap()
+            .progress_chars("#>-"),
+    );
 
     let mut completed_jobs = std::collections::HashSet::new();
     let mut failed = 0;
-    
+
     loop {
         if completed_jobs.len() == job_ids.len() {
             break;
         }
         let mut progress_made = false;
         for &jid in &job_ids {
-            if completed_jobs.contains(&jid) { continue; }
-            let res = http.get(format!("{}/jobs/{}", base_url, jid))
+            if completed_jobs.contains(&jid) {
+                continue;
+            }
+            let res = http
+                .get(format!("{}/jobs/{}", base_url, jid))
                 .header("Authorization", format!("Bearer {}", session_token))
-                .send().await;
+                .send()
+                .await;
             if let Ok(r) = res {
                 if let Ok(status) = r.json::<JobStatusResponse>().await {
                     match status.status.as_str() {
@@ -345,14 +431,16 @@ async fn ingest_youtube_playlist(http: &Client, base_url: &str, session_token: &
 }
 
 pub async fn run_local_ingest_cmd(path: &str, playlists: bool, _bg: bool) -> Result<()> {
-    let session = load_session().context("You are not logged in. Please run `bvault login` first.")?;
+    let session =
+        load_session().context("You are not logged in. Please run `bvault login` first.")?;
     let base_url = get_api_url();
     let http = Client::new();
     run_local_ingest(&http, &base_url, &session.token, path, playlists).await
 }
 
 pub async fn run_gdrive_ingest(path: &str, _bg: bool) -> Result<()> {
-    let session = load_session().context("You are not logged in. Please run `bvault login` first.")?;
+    let session =
+        load_session().context("You are not logged in. Please run `bvault login` first.")?;
     let base_url = get_api_url();
     let http = Client::new();
 
@@ -364,11 +452,15 @@ pub async fn run_gdrive_ingest(path: &str, _bg: bool) -> Result<()> {
     let folder_id = resolve_gdrive_path(&http, &access_token, path).await?;
     pb.set_message("Importing from Google Drive...");
     let payload = serde_json::json!({ "access_token": access_token, "folder_id": folder_id });
-    let res = http.post(format!("{}/ingest/gdrive", base_url))
+    let res = http
+        .post(format!("{}/ingest/gdrive", base_url))
         .header("Authorization", format!("Bearer {}", session.token))
-        .json(&payload).send().await?;
+        .json(&payload)
+        .send()
+        .await?;
     if !res.status().is_success() {
-        let status = res.status(); let _ = res.text().await;
+        let status = res.status();
+        let _ = res.text().await;
         pb.finish_with_message(format!("✗ Import failed: {}", status));
         anyhow::bail!("gdrive import failed");
     }
@@ -390,7 +482,7 @@ async fn resolve_gdrive_path(http: &Client, access_token: &str, path: &str) -> R
 
     let mut current_parent = "root".to_string();
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    
+
     if segments.is_empty() {
         return Ok("root".to_string());
     }
@@ -398,17 +490,18 @@ async fn resolve_gdrive_path(http: &Client, access_token: &str, path: &str) -> R
     for segment in segments {
         // Query to find a folder with the exact name inside the current_parent
         let q = format!("'{}' in parents and name = '{}' and trashed = false and mimeType = 'application/vnd.google-apps.folder'", current_parent, segment);
-        
-        let res = http.get("https://www.googleapis.com/drive/v3/files")
+
+        let res = http
+            .get("https://www.googleapis.com/drive/v3/files")
             .bearer_auth(access_token)
             .query(&[("q", q), ("fields", "files(id)".to_string())])
             .send()
             .await?;
-            
+
         if !res.status().is_success() {
             anyhow::bail!("Failed to query Google Drive API: {}", res.status());
         }
-        
+
         let data: GDriveFiles = res.json().await?;
         if let Some(files) = data.files {
             if let Some(first_file) = files.first() {
@@ -420,45 +513,52 @@ async fn resolve_gdrive_path(http: &Client, access_token: &str, path: &str) -> R
             anyhow::bail!("Folder '{}' not found in path '{}'", segment, path);
         }
     }
-    
+
     Ok(current_parent)
 }
 
 async fn google_oauth_flow(scope_url: &str) -> Result<String> {
     let client_id = ClientId::new(include_str!("../gdrive_client_id.txt").trim().to_string());
-    let client_secret = ClientSecret::new(include_str!("../gdrive_client_secret.txt").trim().to_string());
-    
+    let client_secret = ClientSecret::new(
+        include_str!("../gdrive_client_secret.txt")
+            .trim()
+            .to_string(),
+    );
+
     // We bind to a fixed port 8081 for the redirect URI
     let redirect_uri = RedirectUrl::new("http://localhost:8081".to_string())?;
-    
+
     let auth_url = AuthUrl::new("https://accounts.google.com/o/oauth2/v2/auth".to_string())?;
     let token_url = TokenUrl::new("https://oauth2.googleapis.com/token".to_string())?;
-    
+
     let client = BasicClient::new(client_id, Some(client_secret), auth_url, Some(token_url))
         .set_redirect_uri(redirect_uri);
-        
+
     let (authorize_url, _csrf_state) = client
         .authorize_url(CsrfToken::new_random)
         .add_scope(Scope::new(scope_url.to_string()))
         .url();
-        
+
     println!("Opening your browser to authenticate...");
     if webbrowser::open(authorize_url.as_str()).is_err() {
         println!("Please open this URL in your browser:\n{}", authorize_url);
     }
-    
+
     // Start local server to catch the callback
     // Use tokio spawn_blocking so we don't block the async runtime
     let access_token = tokio::task::spawn_blocking(move || -> Result<String> {
-        let server = Server::http("127.0.0.1:8081").map_err(|e| anyhow::anyhow!("Failed to bind server: {}", e))?;
+        let server = Server::http("127.0.0.1:8081")
+            .map_err(|e| anyhow::anyhow!("Failed to bind server: {}", e))?;
         for request in server.incoming_requests() {
             let url = request.url().to_string();
             if url.starts_with("/?") {
                 let code = url.split("code=").nth(1).and_then(|s| s.split('&').next());
                 if let Some(c) = code {
-                    let response = Response::from_string("Success! You can close this tab and return to the terminal.");
+                    let response = Response::from_string(
+                        "Success! You can close this tab and return to the terminal.",
+                    );
                     let _ = request.respond(response);
-                    
+
                     // Since we are inside spawn_blocking, we must block on the async exchange request
                     let rt = tokio::runtime::Handle::current();
                     let token_res = rt.block_on(async {
@@ -476,14 +576,13 @@ async fn google_oauth_flow(scope_url: &str) -> Result<String> {
         anyhow::bail!("Server closed before authorization completed")
     })
     .await??;
-    
+
     Ok(access_token)
 }
 
 // ---- local ingestion (file, directory, directory-as-playlists) -------------
 
-const AUDIO_EXTS: &[&str] =
-    &["mp3", "flac", "wav", "aiff", "aif", "m4a", "aac"];
+const AUDIO_EXTS: &[&str] = &["mp3", "flac", "wav", "aiff", "aif", "m4a", "aac"];
 
 /// Local ingestion. Three shapes:
 /// - a file → upload it;
@@ -506,7 +605,10 @@ async fn run_local_ingest(
 
     if root.is_file() {
         let r = upload_one(http, base_url, token, root).await?;
-        println!("✓ ingested: {}", r.title.as_deref().unwrap_or("Unknown Title"));
+        println!(
+            "✓ ingested: {}",
+            r.title.as_deref().unwrap_or("Unknown Title")
+        );
         return Ok(());
     }
 
@@ -521,7 +623,11 @@ async fn run_local_ingest(
         println!(
             "✓ ingested {} file(s){}.",
             ok.len(),
-            if failed > 0 { format!(", {} failed", failed) } else { String::new() }
+            if failed > 0 {
+                format!(", {} failed", failed)
+            } else {
+                String::new()
+            }
         );
         return Ok(());
     }
@@ -531,7 +637,10 @@ async fn run_local_ingest(
 
     let loose = direct_audio_children(root);
     if !loose.is_empty() {
-        println!("Uploading {} loose file(s) in the root (no playlist)...", loose.len());
+        println!(
+            "Uploading {} loose file(s) in the root (no playlist)...",
+            loose.len()
+        );
         let _ = upload_all(http, base_url, token, &loose).await;
         made_any = true;
     }
@@ -563,7 +672,11 @@ async fn run_local_ingest(
             "  ✓ created \"{}\" with {} track(s){}.",
             name,
             hashes.len(),
-            if failed > 0 { format!(" ({} failed)", failed) } else { String::new() }
+            if failed > 0 {
+                format!(" ({} failed)", failed)
+            } else {
+                String::new()
+            }
         );
         made_any = true;
     }
@@ -591,7 +704,10 @@ async fn upload_all(
     let mut hashes = Vec::new();
     let mut failed = 0usize;
     for f in files {
-        let label = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let label = f
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         pb.set_message(label.clone());
         match upload_one(http, base_url, token, f).await {
             Ok(r) => hashes.push(r.hash),
@@ -615,7 +731,11 @@ async fn upload_one(
     let bytes = tokio::fs::read(path)
         .await
         .with_context(|| format!("reading {}", path.display()))?;
-    let file_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let file_name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
     let form = reqwest::multipart::Form::new().part("file", part);
     let res = http
@@ -627,7 +747,11 @@ async fn upload_one(
     if !res.status().is_success() {
         let status = res.status();
         let body = res.text().await.unwrap_or_default();
-        anyhow::bail!("upload failed ({}): {}", status, body.chars().take(120).collect::<String>());
+        anyhow::bail!(
+            "upload failed ({}): {}",
+            status,
+            body.chars().take(120).collect::<String>()
+        );
     }
     Ok(res.json::<IngestResult>().await?)
 }

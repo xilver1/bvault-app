@@ -132,7 +132,9 @@ mod tests {
         let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
         (0..len)
             .map(|_| {
-                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 (state >> 56) as u8
             })
             .collect()

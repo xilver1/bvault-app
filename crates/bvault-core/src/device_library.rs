@@ -20,7 +20,7 @@
 //! Schema and row values were reverse-engineered from a golden 1-track export
 //! (rekordbox 6.8.4) after extracting the key via x64dbg (`sqlite3_key` hook).
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::Serialize;
 
 use crate::error::{Error, Result};
@@ -31,8 +31,7 @@ use crate::track::TrackAnalysis;
 /// Captured from rekordbox 6.8.4 via `sqlite3_key`. Shared with `master.db`;
 /// not device-specific. If a future rekordbox version rotates this, it must be
 /// re-captured with the same debugger hook.
-const DEVICE_LIBRARY_KEY: &str =
-    "r8gddnr4k847830ar6cqzbkk0el6qytmb3trbbx805jm74vez64i5o8fnrqryqls";
+const DEVICE_LIBRARY_KEY: &str = "r8gddnr4k847830ar6cqzbkk0el6qytmb3trbbx805jm74vez64i5o8fnrqryqls";
 
 /// Device library schema version string written to `property.dbVersion`.
 const DB_VERSION: &str = "10000";
@@ -242,8 +241,7 @@ pub fn build_export_library(
             .map_err(|e| Error::DeviceLibrary(format!("removing stale exportLibrary.db: {e}")))?;
     }
 
-    let conn = Connection::open(db_path)
-        .map_err(|e| Error::DeviceLibrary(format!("open: {e}")))?;
+    let conn = Connection::open(db_path).map_err(|e| Error::DeviceLibrary(format!("open: {e}")))?;
 
     // Key the database. Must be the very first statement issued. SQLCipher 4
     // defaults (AES-256-CBC / PBKDF2-HMAC-SHA512 256000 / HMAC-SHA512 / 4096)
@@ -262,8 +260,11 @@ pub fn build_export_library(
 
     // --- static template tables ---------------------------------------
     for (id, name) in COLORS {
-        conn.execute("INSERT INTO color(color_id,name) VALUES(?1,?2)", params![id, name])
-            .map_err(|e| Error::DeviceLibrary(format!("color: {e}")))?;
+        conn.execute(
+            "INSERT INTO color(color_id,name) VALUES(?1,?2)",
+            params![id, name],
+        )
+        .map_err(|e| Error::DeviceLibrary(format!("color: {e}")))?;
     }
     for (id, kind, name) in MENU_ITEMS {
         conn.execute(
@@ -490,7 +491,10 @@ mod tests {
         let json = build_devlib_backup_json(&opts).unwrap();
         assert!(json.contains("7e3edbae287b47ae9518e96877691de9"));
         assert!(json.contains("\"info\": []"));
-        assert_eq!(devlib_backup_filename(&opts), "rbDevLibBaInfo_572520782.json");
+        assert_eq!(
+            devlib_backup_filename(&opts),
+            "rbDevLibBaInfo_572520782.json"
+        );
     }
 
     #[test]
@@ -503,7 +507,10 @@ mod tests {
 
         // File must NOT be plaintext SQLite (i.e. it is encrypted).
         let head = std::fs::read(&db).unwrap();
-        assert!(!head.starts_with(b"SQLite format 3"), "db must be encrypted");
+        assert!(
+            !head.starts_with(b"SQLite format 3"),
+            "db must be encrypted"
+        );
 
         // Reopening with the key must succeed and expose the schema.
         let conn = Connection::open(&db).unwrap();

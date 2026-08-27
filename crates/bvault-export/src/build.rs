@@ -60,8 +60,11 @@ pub fn build_export(
 
     // 2. Playlists in a stable (name-sorted) order; ids 1-based, shared verbatim
     //    by the PDB and the device library so the two agree.
-    let mut playlists: Vec<&PlaylistInput> =
-        input.playlists.iter().filter(|p| !p.name.is_empty()).collect();
+    let mut playlists: Vec<&PlaylistInput> = input
+        .playlists
+        .iter()
+        .filter(|p| !p.name.is_empty())
+        .collect();
     playlists.sort_by(|a, b| a.name.cmp(&b.name));
     let content_ids: Vec<Vec<u32>> = playlists
         .iter()
@@ -82,7 +85,12 @@ pub fn build_export(
         pdb.add_playlist((i as u32) + 1, 0, &p.name, content_ids[i].clone());
     }
     let pdb_bytes = pdb.build()?;
-    write_staged(staging, "PIONEER/rekordbox/export.pdb", &pdb_bytes, &mut entries)?;
+    write_staged(
+        staging,
+        "PIONEER/rekordbox/export.pdb",
+        &pdb_bytes,
+        &mut entries,
+    )?;
 
     // 4. Device Library Plus: encrypted exportLibrary.db + its backup json.
     write_device_library(&analyses, &playlists, &content_ids, staging, &mut entries)?;
@@ -107,7 +115,13 @@ pub fn build_export(
         let stem = dat_rel.strip_suffix(".DAT").unwrap_or(&dat_rel);
         let total_samples = (a.duration_secs * a.sample_rate.max(1) as f64).round() as u64;
 
-        let dat = generate_dat_file(&a.beat_grid, &a.waveform, &a.file_path, a.file_size, total_samples)?;
+        let dat = generate_dat_file(
+            &a.beat_grid,
+            &a.waveform,
+            &a.file_path,
+            a.file_size,
+            total_samples,
+        )?;
         write_staged(staging, &dat_rel, &dat, &mut entries)?;
 
         let ext = generate_ext_file(&a.beat_grid, &a.waveform, &a.file_path, &a.cue_points)?;
@@ -124,7 +138,9 @@ pub fn build_export(
         entries.push(ManifestEntry {
             usb_path: r.contents_usb.clone(),
             size,
-            source: Source::Raw { hash: r.hash.clone() },
+            source: Source::Raw {
+                hash: r.hash.clone(),
+            },
         });
     }
 

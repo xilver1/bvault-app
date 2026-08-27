@@ -137,7 +137,10 @@ pub async fn reconcile_export<P: TransferProgress + 'static>(
         if let Source::Raw { hash } = &entry.source {
             let computed_hash = bvault_hash::hash_hex(hasher.finalize());
             if &computed_hash != hash {
-                progress.on_error(&entry.usb_path, "Hash mismatch: file corrupted during transfer");
+                progress.on_error(
+                    &entry.usb_path,
+                    "Hash mismatch: file corrupted during transfer",
+                );
                 writer.abort().await;
                 continue;
             }

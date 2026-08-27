@@ -50,9 +50,7 @@ pub struct PdbDiff {
 
 impl PdbDiff {
     pub fn is_identical(&self) -> bool {
-        self.diffs.is_empty()
-            && self.only_in_golden.is_empty()
-            && self.only_in_mine.is_empty()
+        self.diffs.is_empty() && self.only_in_golden.is_empty() && self.only_in_mine.is_empty()
     }
 
     /// Render a human-readable report.
@@ -130,8 +128,7 @@ impl PdbDiff {
             }
         }
         if !tally.is_empty() {
-            let parts: Vec<String> =
-                tally.iter().map(|(t, n)| format!("{}x{}", t, n)).collect();
+            let parts: Vec<String> = tally.iter().map(|(t, n)| format!("{}x{}", t, n)).collect();
             let _ = writeln!(s, "Differing pages by table: {}", parts.join(", "));
         }
         s

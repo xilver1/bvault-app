@@ -25,7 +25,8 @@ struct Track {
 }
 
 pub async fn run_library_flow(search: Option<&str>) -> Result<()> {
-    let session = load_session().context("You are not logged in. Please run `bvault login` first.")?;
+    let session =
+        load_session().context("You are not logged in. Please run `bvault login` first.")?;
     let base_url = get_api_url();
     let http = Client::new();
 
@@ -124,7 +125,8 @@ fn fmt_len(secs: Option<f64>) -> String {
 }
 
 fn fmt_bpm(bpm: Option<f64>) -> String {
-    bpm.map(|b| format!("{:.0}", b)).unwrap_or_else(|| "—".into())
+    bpm.map(|b| format!("{:.0}", b))
+        .unwrap_or_else(|| "—".into())
 }
 
 fn fmt_bitrate(kbps: Option<u32>) -> String {

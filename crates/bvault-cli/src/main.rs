@@ -1,18 +1,18 @@
-use clap::{Parser, Subcommand};
 use anyhow::Result;
+use clap::{Parser, Subcommand};
 use tracing_subscriber;
 
 mod client;
-mod tui;
+mod download;
 mod export;
-mod login;
-mod logout;
-mod register;
 mod ingest;
 mod library;
+mod login;
+mod logout;
 mod playlist;
+mod register;
 mod status;
-mod download;
+mod tui;
 
 #[derive(Parser)]
 #[command(name = "bvault")]
@@ -79,7 +79,10 @@ enum PlaylistCommands {
     /// View tracks in a playlist
     View { name: String },
     /// Create or add tracks to a playlist
-    Add { name: String, tracks: Option<String> },
+    Add {
+        name: String,
+        tracks: Option<String>,
+    },
     /// Remove tracks from a playlist
     Remove { name: String, tracks: String },
     /// Delete a playlist
@@ -152,45 +155,60 @@ async fn main() -> Result<()> {
         Commands::Status { command } => {
             status::run_status_flow(command.as_ref()).await?;
         }
-        Commands::Ingest { command } => {
-            match command {
-                IngestCommands::Youtube { query, login, playlists, bg } => {
-                    ingest::run_youtube_ingest(query.as_deref(), *login, *playlists, *bg).await?;
-                }
-                IngestCommands::Local { path, playlists, bg } => {
-                    ingest::run_local_ingest_cmd(path, *playlists, *bg).await?;
-                }
-                IngestCommands::Gdrive { path, bg } => {
-                    ingest::run_gdrive_ingest(path, *bg).await?;
-                }
+        Commands::Ingest { command } => match command {
+            IngestCommands::Youtube {
+                query,
+                login,
+                playlists,
+                bg,
+            } => {
+                ingest::run_youtube_ingest(query.as_deref(), *login, *playlists, *bg).await?;
             }
-        }
+            IngestCommands::Local {
+                path,
+                playlists,
+                bg,
+            } => {
+                ingest::run_local_ingest_cmd(path, *playlists, *bg).await?;
+            }
+            IngestCommands::Gdrive { path, bg } => {
+                ingest::run_gdrive_ingest(path, *bg).await?;
+            }
+        },
         Commands::Library { search } => {
             library::run_library_flow(search.as_deref()).await?;
         }
-        Commands::Playlist { command: playlist_cmd } => {
-            match playlist_cmd {
-                PlaylistCommands::List => {
-                    playlist::run_playlist_list_flow().await?;
-                }
-                PlaylistCommands::View { name } => {
-                    playlist::run_playlist_view_flow(name).await?;
-                }
-                PlaylistCommands::Add { name, tracks } => {
-                    playlist::run_playlist_add_flow(name, tracks).await?;
-                }
-                PlaylistCommands::Remove { name, tracks } => {
-                    playlist::run_playlist_remove_flow(name, tracks).await?;
-                }
-                PlaylistCommands::Delete { name } => {
-                    playlist::run_playlist_delete_flow(name).await?;
-                }
+        Commands::Playlist {
+            command: playlist_cmd,
+        } => match playlist_cmd {
+            PlaylistCommands::List => {
+                playlist::run_playlist_list_flow().await?;
             }
-        }
-        Commands::Export { playlist_name, usb, path } => {
+            PlaylistCommands::View { name } => {
+                playlist::run_playlist_view_flow(name).await?;
+            }
+            PlaylistCommands::Add { name, tracks } => {
+                playlist::run_playlist_add_flow(name, tracks).await?;
+            }
+            PlaylistCommands::Remove { name, tracks } => {
+                playlist::run_playlist_remove_flow(name, tracks).await?;
+            }
+            PlaylistCommands::Delete { name } => {
+                playlist::run_playlist_delete_flow(name).await?;
+            }
+        },
+        Commands::Export {
+            playlist_name,
+            usb,
+            path,
+        } => {
             export::run_export_flow(playlist_name, *usb, path.clone()).await?;
         }
-        Commands::Download { query, playlist, out } => {
+        Commands::Download {
+            query,
+            playlist,
+            out,
+        } => {
             download::run_download_flow(query, *playlist, out).await?;
         }
     }

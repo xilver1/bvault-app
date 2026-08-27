@@ -18,7 +18,7 @@ pub fn get_config_dir() -> std::path::PathBuf {
 pub fn load_session() -> Result<Session> {
     let mut path = get_config_dir();
     path.push("session.json");
-    
+
     let content = fs::read_to_string(path)?;
     let session = serde_json::from_str(&content)?;
     Ok(session)

@@ -72,10 +72,7 @@ pub fn generate_xml(
     let mut out = String::with_capacity(4096 + tracks.len() * 512);
 
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n");
-    let _ = writeln!(
-        out,
-        "<DJ_PLAYLISTS Version=\"1.0.0\">"
-    );
+    let _ = writeln!(out, "<DJ_PLAYLISTS Version=\"1.0.0\">");
     let _ = writeln!(
         out,
         "  <PRODUCT Name=\"{}\" Version=\"{}\" Company=\"{}\"/>",
@@ -93,10 +90,7 @@ pub fn generate_xml(
 
     // ---- PLAYLISTS -------------------------------------------------------
     // Deterministic order: sort by name, skip empties (mirrors export_usb).
-    let mut names: Vec<&String> = playlists
-        .keys()
-        .filter(|n| !n.is_empty())
-        .collect();
+    let mut names: Vec<&String> = playlists.keys().filter(|n| !n.is_empty()).collect();
     names.sort();
 
     let _ = writeln!(
@@ -132,9 +126,7 @@ fn write_track(out: &mut String, t: &TrackAnalysis, opts: &XmlExportOptions) {
     let kind = kind_string(t.file_type, &t.file_path);
     let tonality = t.key.map(|k| k.name()).unwrap_or_default();
 
-    let has_children = !t.beat_grid.is_empty()
-        || t.bpm > 0.0
-        || !t.cue_points.is_empty();
+    let has_children = !t.beat_grid.is_empty() || t.bpm > 0.0 || !t.cue_points.is_empty();
 
     let _ = write!(
         out,
@@ -216,7 +208,11 @@ fn write_tempos(out: &mut String, grid: &BeatGrid, fallback_bpm: f64) {
 /// which differs from this crate's [`CueType`] (which starts at 1).
 fn write_position_mark(out: &mut String, cue: &CuePoint, include_colors: bool) {
     let is_loop = matches!(cue.cue_type, CueType::Loop) || cue.loop_ms > 0.0;
-    let rb_type = if is_loop { 4 } else { cue_type_to_rb(cue.cue_type) };
+    let rb_type = if is_loop {
+        4
+    } else {
+        cue_type_to_rb(cue.cue_type)
+    };
     let num: i32 = if cue.hot_cue == 0 {
         -1
     } else {
@@ -318,8 +314,8 @@ fn file_uri(abs: &str) -> String {
 fn percent_encode_path(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for &b in s.as_bytes() {
-        let keep = b.is_ascii_alphanumeric()
-            || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/' | b':');
+        let keep =
+            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/' | b':');
         if keep {
             out.push(b as char);
         } else {

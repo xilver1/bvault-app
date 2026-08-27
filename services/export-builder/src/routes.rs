@@ -116,10 +116,14 @@ async fn create_export(
     // Union of member hashes (+ locations), filtered to what's actually analyzed
     // — export operates on analyzed tracks only; a stray unanalyzed one is skipped.
     let union = st.meta.resolve_hashes(user.id, &req.playlist_ids).await?;
-    let tracks: Vec<(String, String)> =
-        union.into_iter().filter(|(h, _)| st.artifacts.exists(h)).collect();
+    let tracks: Vec<(String, String)> = union
+        .into_iter()
+        .filter(|(h, _)| st.artifacts.exists(h))
+        .collect();
     if tracks.is_empty() {
-        return Err(ExportError::BadRequest("no analyzed tracks to export".into()));
+        return Err(ExportError::BadRequest(
+            "no analyzed tracks to export".into(),
+        ));
     }
 
     // Playlist name + membership for the PDB/device-library playlist entries.
@@ -127,7 +131,10 @@ async fn create_export(
     for id in &req.playlist_ids {
         if let Some(pl) = st.meta.get_playlist(user.id, *id).await? {
             let hashes = st.meta.playlist_hashes(user.id, *id).await?;
-            playlists.push(PlaylistInput { name: pl.name, hashes });
+            playlists.push(PlaylistInput {
+                name: pl.name,
+                hashes,
+            });
         }
     }
 
@@ -149,8 +156,10 @@ async fn create_export(
 
             // Server-side resolver: usb_path -> raw_location for audio entries, so
             // the client never learns internal store paths.
-            let loc: HashMap<&str, &str> =
-                tracks.iter().map(|(h, l)| (h.as_str(), l.as_str())).collect();
+            let loc: HashMap<&str, &str> = tracks
+                .iter()
+                .map(|(h, l)| (h.as_str(), l.as_str()))
+                .collect();
             let mut raw_sources = HashMap::new();
             for e in &manifest.entries {
                 if let Source::Raw { hash } = &e.source {
@@ -184,7 +193,10 @@ async fn create_export(
         .await
         .map_err(|e| ExportError::Internal(e.to_string()))?;
 
-    Ok(Json(CreateExportResponse { export_id, manifest }))
+    Ok(Json(CreateExportResponse {
+        export_id,
+        manifest,
+    }))
 }
 
 async fn get_manifest(
@@ -194,7 +206,9 @@ async fn get_manifest(
 ) -> ApiResult<Response> {
     let dir = st.config.staging_root.join(id.to_string());
     assert_owner(&dir, &user).await?;
-    let bytes = tokio::fs::read(dir.join("manifest.json")).await.map_err(|_| ExportError::NotFound)?;
+    let bytes = tokio::fs::read(dir.join("manifest.json"))
+        .await
+        .map_err(|_| ExportError::NotFound)?;
     Ok(([(header::CONTENT_TYPE, "application/json")], bytes).into_response())
 }
 
@@ -217,7 +231,10 @@ async fn serve_file(
         serde_json::from_slice(&bytes).map_err(|e| ExportError::Internal(e.to_string()))?
     };
     if let Some(location) = sources.get(&usb_path) {
-        let path = st.raw.resolve(location).map_err(|_| ExportError::NotFound)?;
+        let path = st
+            .raw
+            .resolve(location)
+            .map_err(|_| ExportError::NotFound)?;
         return stream_path(path).await;
     }
 

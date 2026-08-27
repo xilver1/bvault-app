@@ -112,12 +112,18 @@ mod tests {
 
         assert!(!store.exists(hash));
         store
-            .put(hash, &[("analysis.json", b"{}"), ("ANLZ0000.DAT", b"\x00\x01")])
+            .put(
+                hash,
+                &[("analysis.json", b"{}"), ("ANLZ0000.DAT", b"\x00\x01")],
+            )
             .unwrap();
 
         assert!(store.exists(hash));
         assert_eq!(store.get(hash, "analysis.json").unwrap(), b"{}");
-        assert_eq!(store.list(hash).unwrap(), vec!["ANLZ0000.DAT", "analysis.json"]);
+        assert_eq!(
+            store.list(hash).unwrap(),
+            vec!["ANLZ0000.DAT", "analysis.json"]
+        );
     }
 
     #[test]

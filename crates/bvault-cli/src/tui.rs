@@ -1,8 +1,8 @@
-use std::sync::Arc;
 use bvault_transfer::TransferProgress;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use std::sync::Mutex;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 pub struct ExportProgress {
     multi: MultiProgress,
@@ -38,7 +38,10 @@ impl TransferProgress for ExportProgress {
         let pb = self.multi.add(ProgressBar::new(size));
         pb.set_style(
             ProgressStyle::default_bar()
-                .template(&format!("{{spinner:.green}} {}: [{{bar:20.yellow/white}}] {{bytes}}/{{total_bytes}}", usb_path))
+                .template(&format!(
+                    "{{spinner:.green}} {}: [{{bar:20.yellow/white}}] {{bytes}}/{{total_bytes}}",
+                    usb_path
+                ))
                 .unwrap()
                 .progress_chars("=>-"),
         );
@@ -60,11 +63,15 @@ impl TransferProgress for ExportProgress {
     }
 
     fn on_file_skipped(&self, usb_path: &str) {
-        self.multi.println(format!("✓ Skipped {}", usb_path)).unwrap();
+        self.multi
+            .println(format!("✓ Skipped {}", usb_path))
+            .unwrap();
     }
 
     fn on_error(&self, usb_path: &str, error: &str) {
-        self.multi.println(format!("✗ Error on {}: {}", usb_path, error)).unwrap();
+        self.multi
+            .println(format!("✗ Error on {}: {}", usb_path, error))
+            .unwrap();
     }
 
     fn on_complete(&self) {

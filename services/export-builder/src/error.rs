@@ -35,15 +35,24 @@ impl IntoResponse for ExportError {
             ExportError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ExportError::Meta(e) => {
                 error!(error = %e, "metadata error");
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string(),
+                )
             }
             ExportError::Build(e) => {
                 error!(error = %e, "export build failed");
-                (StatusCode::INTERNAL_SERVER_ERROR, "build failed".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "build failed".to_string(),
+                )
             }
             ExportError::Internal(m) => {
                 error!(error = %m, "internal error");
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string(),
+                )
             }
         };
         (status, Json(json!({ "error": message }))).into_response()

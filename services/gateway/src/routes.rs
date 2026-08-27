@@ -1,14 +1,14 @@
+use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, FromRequestParts, Multipart, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use axum::body::Body;
-use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use tokio_util::io::ReaderStream;
+use uuid::Uuid;
 
 use bvault_jobs::{AnalysisJob, Job, JobKind, JobStatus, YtDlpIngestJob};
 use bvault_meta::{Playlist, SearchResult};
@@ -27,13 +27,22 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
-        .route("/auth/youtube/cookies", get(get_youtube_cookies).post(set_youtube_cookies))
+        .route(
+            "/auth/youtube/cookies",
+            get(get_youtube_cookies).post(set_youtube_cookies),
+        )
         .route("/tracks", get(list_tracks).post(register_track))
         .route("/tracks/{hash}/raw", get(download_track_raw))
         .route("/playlists", get(list_playlists).post(create_playlist))
-        .route("/playlists/{id}", get(get_playlist).delete(delete_playlist_endpoint))
+        .route(
+            "/playlists/{id}",
+            get(get_playlist).delete(delete_playlist_endpoint),
+        )
         .route("/playlists/{id}/hashes", get(playlist_hashes))
-        .route("/playlists/{id}/remove", post(remove_playlist_tracks_endpoint))
+        .route(
+            "/playlists/{id}/remove",
+            post(remove_playlist_tracks_endpoint),
+        )
         .route("/analyze", post(analyze))
         .route("/batches/{id}", get(batch_progress))
         .route(
@@ -71,17 +80,25 @@ async fn get_status(
     State(st): State<AppState>,
 ) -> ApiResult<Json<StatusResponse>> {
     let mut jobs = Vec::new();
-    
+
     let analysis_counts = st.queue.counts(JobKind::Analysis).await?;
     for (status, count) in analysis_counts {
-        jobs.push(QueueStatus { kind: JobKind::Analysis, status, count });
+        jobs.push(QueueStatus {
+            kind: JobKind::Analysis,
+            status,
+            count,
+        });
     }
-    
+
     let ytdlp_counts = st.queue.counts(JobKind::YtDlpIngest).await?;
     for (status, count) in ytdlp_counts {
-        jobs.push(QueueStatus { kind: JobKind::YtDlpIngest, status, count });
+        jobs.push(QueueStatus {
+            kind: JobKind::YtDlpIngest,
+            status,
+            count,
+        });
     }
-    
+
     Ok(Json(StatusResponse { jobs }))
 }
 
@@ -94,11 +111,20 @@ pub struct AuthUser {
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = GatewayError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         if let Some(internal_key) = &state.config.internal_api_key {
-            if let Some(req_key) = parts.headers.get("x-internal-key").and_then(|v| v.to_str().ok()) {
+            if let Some(req_key) = parts
+                .headers
+                .get("x-internal-key")
+                .and_then(|v| v.to_str().ok())
+            {
                 if req_key == internal_key {
-                    if let Some(user_id_str) = parts.headers.get("x-user-id").and_then(|v| v.to_str().ok()) {
+                    if let Some(user_id_str) =
+                        parts.headers.get("x-user-id").and_then(|v| v.to_str().ok())
+                    {
                         if let Ok(id) = Uuid::parse_str(user_id_str) {
                             return Ok(AuthUser { id });
                         }
@@ -133,9 +159,16 @@ pub struct InternalAuth;
 impl FromRequestParts<AppState> for InternalAuth {
     type Rejection = GatewayError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         if let Some(internal_key) = &state.config.internal_api_key {
-            if let Some(req_key) = parts.headers.get("x-internal-key").and_then(|v| v.to_str().ok()) {
+            if let Some(req_key) = parts
+                .headers
+                .get("x-internal-key")
+                .and_then(|v| v.to_str().ok())
+            {
                 if req_key == internal_key {
                     return Ok(InternalAuth);
                 }
@@ -171,8 +204,8 @@ async fn register(
             "username is required and password must be at least 8 characters".into(),
         ));
     }
-    let hash =
-        bvault_auth::hash_password(&c.password).map_err(|e| GatewayError::Internal(e.to_string()))?;
+    let hash = bvault_auth::hash_password(&c.password)
+        .map_err(|e| GatewayError::Internal(e.to_string()))?;
     let user_id = st.meta.create_user(username, &hash).await?;
     Ok(Json(issue_session(&st, user_id).await?))
 }
@@ -194,7 +227,9 @@ async fn login(
 
 async fn logout(State(st): State<AppState>, headers: HeaderMap) -> ApiResult<StatusCode> {
     if let Some(token) = bearer_token(&headers) {
-        st.meta.delete_session(&bvault_auth::hash_token(token)).await?;
+        st.meta
+            .delete_session(&bvault_auth::hash_token(token))
+            .await?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -279,13 +314,13 @@ async fn list_tracks(
         let raw = st.raw.clone();
         let hash = t.hash.clone();
         let raw_loc = t.raw_location.clone();
-        
+
         let (summary_opt, mut size_bytes) = tokio::task::spawn_blocking(move || {
             let summary = artifacts
                 .get(&hash, "analysis.json")
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<AnalysisSummary>(&bytes).ok());
-            
+
             let mut sz = None;
             if summary.is_none() {
                 if let Ok(path) = raw.resolve(&raw_loc) {
@@ -295,7 +330,9 @@ async fn list_tracks(
                 }
             }
             (summary, sz)
-        }).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
+        })
+        .await
+        .map_err(|e| GatewayError::Internal(e.to_string()))?;
 
         let (duration_secs, bpm, bitrate) = match summary_opt {
             Some(s) => {
@@ -332,7 +369,13 @@ async fn register_track(
     Json(t): Json<RegisterTrack>,
 ) -> ApiResult<Json<serde_json::Value>> {
     st.meta
-        .upsert_track(user.id, &t.hash, &t.raw_location, t.title.as_deref(), t.artist.as_deref())
+        .upsert_track(
+            user.id,
+            &t.hash,
+            &t.raw_location,
+            t.title.as_deref(),
+            t.artist.as_deref(),
+        )
         .await?;
     Ok(Json(serde_json::json!({ "hash": t.hash })))
 }
@@ -348,17 +391,19 @@ async fn download_track_raw(
         .await?
         .ok_or(GatewayError::NotFound)?;
 
-    let path = st.raw.resolve(&track.raw_location).map_err(|e| GatewayError::Internal(e.to_string()))?;
-    let file = tokio::fs::File::open(&path).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
-    
+    let path = st
+        .raw
+        .resolve(&track.raw_location)
+        .map_err(|e| GatewayError::Internal(e.to_string()))?;
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| GatewayError::Internal(e.to_string()))?;
+
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 
     Ok((
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "application/octet-stream",
-        )],
+        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
         body,
     ))
 }
@@ -440,7 +485,9 @@ async fn remove_playlist_tracks_endpoint(
     Path(id): Path<Uuid>,
     Json(req): Json<RemoveTracksRequest>,
 ) -> ApiResult<StatusCode> {
-    st.meta.remove_playlist_tracks(user.id, id, &req.hashes).await?;
+    st.meta
+        .remove_playlist_tracks(user.id, id, &req.hashes)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -471,7 +518,10 @@ async fn analyze(
     let tracks = st.meta.resolve_hashes(user.id, &req.playlist_ids).await?;
     let all_hashes: Vec<String> = tracks.iter().map(|(h, _)| h.clone()).collect();
 
-    let batch_id = st.meta.create_batch(user.id, req.name.as_deref(), &all_hashes).await?;
+    let batch_id = st
+        .meta
+        .create_batch(user.id, req.name.as_deref(), &all_hashes)
+        .await?;
 
     let mut enqueued = 0usize;
     for (hash, raw_location) in tracks {
@@ -484,7 +534,12 @@ async fn analyze(
             fallback_title: None,
         };
         st.queue
-            .enqueue(JobKind::Analysis, &hash, &payload, st.config.analysis_max_attempts)
+            .enqueue(
+                JobKind::Analysis,
+                &hash,
+                &payload,
+                st.config.analysis_max_attempts,
+            )
             .await?;
         enqueued += 1;
     }
@@ -511,17 +566,29 @@ async fn batch_progress(
     State(st): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<BatchProgress>> {
-    let batch = st.meta.get_batch(user.id, id).await?.ok_or(GatewayError::NotFound)?;
+    let batch = st
+        .meta
+        .get_batch(user.id, id)
+        .await?
+        .ok_or(GatewayError::NotFound)?;
 
     let total = batch.hashes.len() as i64;
-    
+
     let artifacts = st.artifacts.clone();
     let hashes = batch.hashes.clone();
     let done = tokio::task::spawn_blocking(move || {
-        hashes.iter().filter(|h| artifacts.exists(h.as_str())).count() as i64
-    }).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
-    
-    let failed = st.queue.count_dead(JobKind::Analysis, &batch.hashes).await?;
+        hashes
+            .iter()
+            .filter(|h| artifacts.exists(h.as_str()))
+            .count() as i64
+    })
+    .await
+    .map_err(|e| GatewayError::Internal(e.to_string()))?;
+
+    let failed = st
+        .queue
+        .count_dead(JobKind::Analysis, &batch.hashes)
+        .await?;
 
     Ok(Json(BatchProgress {
         id,
@@ -563,18 +630,26 @@ async fn ingest_upload(
         let name = field.name().unwrap_or("").to_string();
         if name == "file" || name == "audio" {
             file_name = field.file_name().map(|s| s.to_string());
-            
+
             let temp_dir = std::env::temp_dir();
             let tmp_path = temp_dir.join(Uuid::new_v4().to_string());
-            let mut file = tokio::fs::File::create(&tmp_path).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
+            let mut file = tokio::fs::File::create(&tmp_path)
+                .await
+                .map_err(|e| GatewayError::Internal(e.to_string()))?;
             let mut hasher = bvault_hash::ContentHasher::new();
-            
+
             use tokio::io::AsyncWriteExt;
-            while let Some(chunk) = field.chunk().await.map_err(|e| GatewayError::BadRequest(e.to_string()))? {
+            while let Some(chunk) = field
+                .chunk()
+                .await
+                .map_err(|e| GatewayError::BadRequest(e.to_string()))?
+            {
                 hasher.update(&chunk);
-                file.write_all(&chunk).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
+                file.write_all(&chunk)
+                    .await
+                    .map_err(|e| GatewayError::Internal(e.to_string()))?;
             }
-            
+
             file_path = Some(tmp_path);
             final_hash = Some(bvault_hash::hash_hex(hasher.finalize()));
         } else if name == "title" {
@@ -588,7 +663,8 @@ async fn ingest_upload(
         }
     }
 
-    let tmp_path = file_path.ok_or_else(|| GatewayError::BadRequest("missing audio file payload".into()))?;
+    let tmp_path =
+        file_path.ok_or_else(|| GatewayError::BadRequest("missing audio file payload".into()))?;
     let hash = final_hash.unwrap();
     let ext = file_name
         .as_deref()
@@ -606,9 +682,13 @@ async fn ingest_upload(
     .map_err(|e| GatewayError::Internal(e.to_string()))?
     .map_err(|e| GatewayError::Internal(e.to_string()))?;
 
-    let fallback_title = file_name
-        .as_deref()
-        .map(|n| std::path::Path::new(n).file_stem().unwrap_or_default().to_string_lossy().to_string());
+    let fallback_title = file_name.as_deref().map(|n| {
+        std::path::Path::new(n)
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    });
 
     let final_title = title_override.or(fallback_title);
     let final_artist = artist_override;
@@ -629,8 +709,14 @@ async fn ingest_upload(
             raw_location: raw_location.clone(),
             fallback_title: final_title.clone(),
         };
-        let _ = st.queue
-            .enqueue(JobKind::Analysis, &hash, &payload, st.config.analysis_max_attempts)
+        let _ = st
+            .queue
+            .enqueue(
+                JobKind::Analysis,
+                &hash,
+                &payload,
+                st.config.analysis_max_attempts,
+            )
             .await;
     }
 
@@ -675,10 +761,14 @@ async fn ingest_gdrive(
 ) -> ApiResult<Json<GDriveIngestResponse>> {
     let q = format!("'{}' in parents and trashed = false", req.folder_id);
 
-    let list_res: GDriveFileList = st.http
+    let list_res: GDriveFileList = st
+        .http
         .get("https://www.googleapis.com/drive/v3/files")
         .bearer_auth(&req.access_token)
-        .query(&[("q", q), ("fields", "files(id, name, mimeType)".to_string())])
+        .query(&[
+            ("q", q),
+            ("fields", "files(id, name, mimeType)".to_string()),
+        ])
         .send()
         .await
         .map_err(|e| GatewayError::Internal(format!("gdrive list error: {e}")))?
@@ -699,8 +789,12 @@ async fn ingest_gdrive(
             continue;
         }
 
-        let mut download_url = format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", file.id);
-        let mut bytes_res = st.http
+        let mut download_url = format!(
+            "https://www.googleapis.com/drive/v3/files/{}?alt=media",
+            file.id
+        );
+        let mut bytes_res = st
+            .http
             .get(&download_url)
             .bearer_auth(&req.access_token)
             .send()
@@ -712,7 +806,12 @@ async fn ingest_gdrive(
                 if let Some(loc) = r.headers().get(axum::http::header::LOCATION) {
                     if let Ok(loc_str) = loc.to_str() {
                         download_url = loc_str.to_string();
-                        bytes_res = st.http.get(&download_url).bearer_auth(&req.access_token).send().await;
+                        bytes_res = st
+                            .http
+                            .get(&download_url)
+                            .bearer_auth(&req.access_token)
+                            .send()
+                            .await;
                         redirects += 1;
                         continue;
                     }
@@ -728,14 +827,18 @@ async fn ingest_gdrive(
 
         let temp_dir = std::env::temp_dir();
         let tmp_path = temp_dir.join(Uuid::new_v4().to_string());
-        
+
         let mut hasher = bvault_hash::ContentHasher::new();
-        let mut f = tokio::fs::File::create(&tmp_path).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
+        let mut f = tokio::fs::File::create(&tmp_path)
+            .await
+            .map_err(|e| GatewayError::Internal(e.to_string()))?;
         use tokio::io::AsyncWriteExt;
 
         while let Ok(Some(chunk)) = bytes_stream.chunk().await {
             hasher.update(&chunk);
-            f.write_all(&chunk).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
+            f.write_all(&chunk)
+                .await
+                .map_err(|e| GatewayError::Internal(e.to_string()))?;
         }
 
         let hash = bvault_hash::hash_hex(hasher.finalize());
@@ -747,10 +850,12 @@ async fn ingest_gdrive(
         let raw_store = st.raw.clone();
         let hash_clone = hash.clone();
         let ext_string = ext.to_string();
-        
+
         let raw_location_res = tokio::task::spawn_blocking(move || {
             raw_store.store_from_temp(tmp_path, &hash_clone, &ext_string)
-        }).await.map_err(|e| GatewayError::Internal(e.to_string()))?;
+        })
+        .await
+        .map_err(|e| GatewayError::Internal(e.to_string()))?;
 
         if let Ok(raw_location) = raw_location_res {
             let title = std::path::Path::new(&file.name)
@@ -767,8 +872,14 @@ async fn ingest_gdrive(
                     raw_location: raw_location.clone(),
                     fallback_title: title.clone(),
                 };
-                let _ = st.queue
-                    .enqueue(JobKind::Analysis, &hash, &payload, st.config.analysis_max_attempts)
+                let _ = st
+                    .queue
+                    .enqueue(
+                        JobKind::Analysis,
+                        &hash,
+                        &payload,
+                        st.config.analysis_max_attempts,
+                    )
                     .await;
             }
 
@@ -804,7 +915,9 @@ struct SearchQuery {
     #[serde(default = "default_search_limit")]
     limit: i64,
 }
-fn default_search_limit() -> i64 { 10 }
+fn default_search_limit() -> i64 {
+    10
+}
 
 /// Trigger yt-dlp microservice audio extraction and ingestion.
 async fn ingest_ytdlp(
@@ -812,16 +925,26 @@ async fn ingest_ytdlp(
     State(st): State<AppState>,
     Json(req): Json<YtDlpIngestRequest>,
 ) -> ApiResult<Json<YtDlpIngestResponse>> {
-    let _service_url = st.config.yt_dlp_service_url.as_deref()
-        .ok_or_else(|| GatewayError::BadRequest("yt-dlp ingestion service is not configured".into()))?;
+    let _service_url = st.config.yt_dlp_service_url.as_deref().ok_or_else(|| {
+        GatewayError::BadRequest("yt-dlp ingestion service is not configured".into())
+    })?;
 
     // Record the run so the CLI can poll it. dedup on (user, url) collapses a
     // repeat request while one is in flight into the same job (no double download).
     let dedup_key = format!("{}:{}", user.id, req.url);
-    let payload = YtDlpIngestJob { url: req.url.clone(), user_id: user.id.to_string() };
-    let job_id = st.queue.enqueue(JobKind::YtDlpIngest, &dedup_key, &payload, 1).await?;
+    let payload = YtDlpIngestJob {
+        url: req.url.clone(),
+        user_id: user.id.to_string(),
+    };
+    let job_id = st
+        .queue
+        .enqueue(JobKind::YtDlpIngest, &dedup_key, &payload, 1)
+        .await?;
 
-    Ok(Json(YtDlpIngestResponse { job_id, status: "accepted".into() }))
+    Ok(Json(YtDlpIngestResponse {
+        job_id,
+        status: "accepted".into(),
+    }))
 }
 
 /// URLs this user has already ingested via yt-dlp (jobs in terminal `succeeded`
@@ -833,7 +956,10 @@ async fn completed_ytdlp(
     State(st): State<AppState>,
 ) -> ApiResult<Json<Vec<String>>> {
     let prefix = format!("{}:", user.id);
-    let keys = st.queue.completed_keys(JobKind::YtDlpIngest, &prefix).await?;
+    let keys = st
+        .queue
+        .completed_keys(JobKind::YtDlpIngest, &prefix)
+        .await?;
     let urls = keys
         .into_iter()
         .filter_map(|k| k.strip_prefix(&prefix).map(str::to_string))
@@ -858,7 +984,10 @@ async fn get_job(
     if !job_owned_by(&job, &user) {
         return Err(GatewayError::NotFound); // 404 not 403, to avoid id enumeration
     }
-    Ok(Json(JobStatusResponse { status: job.status, error: job.last_error }))
+    Ok(Json(JobStatusResponse {
+        status: job.status,
+        error: job.last_error,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -883,14 +1012,15 @@ async fn report_job(
     if r.ok {
         st.queue.complete(id).await?;
     } else {
-        st.queue.mark_dead(id, r.error.as_deref().unwrap_or("yt-dlp ingest failed")).await?;
+        st.queue
+            .mark_dead(id, r.error.as_deref().unwrap_or("yt-dlp ingest failed"))
+            .await?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
 
 fn job_owned_by(job: &Job, user: &AuthUser) -> bool {
-    job.payload.0.get("user_id").and_then(|v| v.as_str())
-        == Some(user.id.to_string().as_str())
+    job.payload.0.get("user_id").and_then(|v| v.as_str()) == Some(user.id.to_string().as_str())
 }
 
 #[derive(Deserialize)]
@@ -911,8 +1041,16 @@ async fn claim_job(
     Json(req): Json<ClaimRequest>,
 ) -> ApiResult<axum::response::Response> {
     use axum::response::IntoResponse;
-    if let Some(job) = st.queue.claim(req.kind, std::time::Duration::from_secs(req.lease_secs)).await? {
-        Ok(Json(ClaimResponse { id: job.id, payload: job.payload.0 }).into_response())
+    if let Some(job) = st
+        .queue
+        .claim(req.kind, std::time::Duration::from_secs(req.lease_secs))
+        .await?
+    {
+        Ok(Json(ClaimResponse {
+            id: job.id,
+            payload: job.payload.0,
+        })
+        .into_response())
     } else {
         Ok(StatusCode::NO_CONTENT.into_response())
     }
@@ -923,23 +1061,33 @@ async fn search_ytdlp(
     State(st): State<AppState>,
     Query(query): Query<SearchQuery>,
 ) -> ApiResult<Json<Vec<SearchResult>>> {
-    let service_url = st.config.yt_dlp_service_url.as_deref()
+    let service_url = st
+        .config
+        .yt_dlp_service_url
+        .as_deref()
         .ok_or_else(|| GatewayError::BadRequest("yt-dlp service not configured".into()))?;
 
-    let mut req = st.http
+    let mut req = st
+        .http
         .get(format!("{}/search", service_url.trim_end_matches('/')))
         .query(&[("q", &query.q), ("limit", &query.limit.to_string())]);
 
     if let Some(key) = &st.config.internal_api_key {
-        req = req.header("X-Internal-Key", key);   // symmetric internal auth
+        req = req.header("X-Internal-Key", key); // symmetric internal auth
     }
 
-    let resp = req.send().await
+    let resp = req
+        .send()
+        .await
         .map_err(|e| GatewayError::Internal(format!("yt-dlp search error: {e}")))?;
     if !resp.status().is_success() {
-        return Err(GatewayError::Internal("yt-dlp search request failed".into()));
+        return Err(GatewayError::Internal(
+            "yt-dlp search request failed".into(),
+        ));
     }
-    let results = resp.json().await
+    let results = resp
+        .json()
+        .await
         .map_err(|e| GatewayError::Internal(format!("yt-dlp search parse error: {e}")))?;
     Ok(Json(results))
 }
@@ -958,14 +1106,14 @@ async fn get_youtube_cookies(
     user: AuthUser,
     State(st): State<AppState>,
 ) -> ApiResult<Json<CookieResponse>> {
-    let row: Option<Vec<u8>> = sqlx::query_scalar("SELECT youtube_cookies FROM users WHERE id = $1")
-        .bind(user.id)
-        .fetch_one(st.meta.pool())
-        .await
-        .map_err(|e| GatewayError::Internal(e.to_string()))?;
+    let row: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT youtube_cookies FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_one(st.meta.pool())
+            .await
+            .map_err(|e| GatewayError::Internal(e.to_string()))?;
 
-    let ciphertext = row
-        .ok_or_else(|| GatewayError::NotFound)?;
+    let ciphertext = row.ok_or_else(|| GatewayError::NotFound)?;
 
     let cookies_txt = bvault_auth::decrypt_cookie(&ciphertext, &st.config.cookie_encryption_key)
         .map_err(|e| GatewayError::Internal(format!("Failed to decrypt cookies: {e}")))?;
@@ -978,8 +1126,9 @@ async fn set_youtube_cookies(
     State(st): State<AppState>,
     Json(payload): Json<CookieRequest>,
 ) -> ApiResult<StatusCode> {
-    let ciphertext = bvault_auth::encrypt_cookie(&payload.cookies_txt, &st.config.cookie_encryption_key)
-        .map_err(|e| GatewayError::Internal(format!("Failed to encrypt cookies: {e}")))?;
+    let ciphertext =
+        bvault_auth::encrypt_cookie(&payload.cookies_txt, &st.config.cookie_encryption_key)
+            .map_err(|e| GatewayError::Internal(format!("Failed to encrypt cookies: {e}")))?;
 
     sqlx::query("UPDATE users SET youtube_cookies = $1 WHERE id = $2")
         .bind(ciphertext)

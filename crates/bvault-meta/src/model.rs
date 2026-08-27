@@ -58,8 +58,8 @@ pub struct Batch {
 pub struct SearchResult {
     pub title: String,
     pub url: String,
-    pub duration_secs: Option<u32>,   // Option: yt-dlp returns null for live streams
+    pub duration_secs: Option<u32>, // Option: yt-dlp returns null for live streams
     pub uploader: String,
-    pub thumbnail: Option<String>,    // for future Android UI
+    pub thumbnail: Option<String>, // for future Android UI
     pub video_id: String,
 }

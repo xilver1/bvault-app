@@ -10,8 +10,10 @@
 //! Reference: https://djl-analysis.deepsymmetry.org/rekordbox-export-analysis/anlz.html
 
 use crate::error::Result;
-use crate::track::{BeatGrid, Waveform, WaveformPreview, WaveformDetail, WaveformColorPreview,
-                   CuePoint, CueType, HotCueColor};
+use crate::track::{
+    BeatGrid, CuePoint, CueType, HotCueColor, Waveform, WaveformColorPreview, WaveformDetail,
+    WaveformPreview,
+};
 
 /// Section tags (4 bytes each)
 const PMAI_TAG: &[u8; 4] = b"PMAI";
@@ -80,7 +82,7 @@ pub fn generate_dat_file(
     total_samples: u64,
 ) -> Result<Vec<u8>> {
     let mut buffer = Vec::with_capacity(64 * 1024);
-    
+
     // Golden .DAT tag set and ORDER: PPTH PVBR PQTZ PWAV PWV2 PCOB PCOB
     // PWV5 was previously written here; rekordbox keeps the color detail
     // waveform in the .EXT only. Emitting it in .DAT is not what rekordbox does.
@@ -91,16 +93,20 @@ pub fn generate_dat_file(
     let pwv2_section = generate_pwv2_section(&waveform.preview);
     let pcob_hot = generate_pcob_empty(1);
     let pcob_mem = generate_pcob_empty(0);
-    
+
     // Calculate total file size
-    let sections_size = ppth_section.len() + pvbr_section.len() + pqtz_section.len()
-                        + pwav_section.len() + pwv2_section.len()
-                        + pcob_hot.len() + pcob_mem.len();
+    let sections_size = ppth_section.len()
+        + pvbr_section.len()
+        + pqtz_section.len()
+        + pwav_section.len()
+        + pwv2_section.len()
+        + pcob_hot.len()
+        + pcob_mem.len();
     let header_size = 28; // PMAI header
     let total_size = header_size + sections_size;
-    
+
     write_pmai_header(&mut buffer, total_size);
-    
+
     // Write sections in golden order
     buffer.extend_from_slice(&ppth_section);
     buffer.extend_from_slice(&pvbr_section);
@@ -109,7 +115,7 @@ pub fn generate_dat_file(
     buffer.extend_from_slice(&pwv2_section);
     buffer.extend_from_slice(&pcob_hot);
     buffer.extend_from_slice(&pcob_mem);
-    
+
     Ok(buffer)
 }
 
@@ -125,7 +131,7 @@ fn generate_pwv2_section(preview: &WaveformPreview) -> Vec<u8> {
     let section_len = 20u32 + 100;
     buffer.extend_from_slice(&header_len.to_be_bytes());
     buffer.extend_from_slice(&section_len.to_be_bytes());
-    buffer.extend_from_slice(&100u32.to_be_bytes());       // entry count
+    buffer.extend_from_slice(&100u32.to_be_bytes()); // entry count
     buffer.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // constant in golden
 
     // Downsample 400 -> 100: max byte over each group of 4 source columns.
@@ -135,7 +141,9 @@ fn generate_pwv2_section(preview: &WaveformPreview) -> Vec<u8> {
             let idx = i * 4 + j;
             if idx < preview.columns.len() {
                 let v = preview.columns[idx].to_byte();
-                if v > peak { peak = v; }
+                if v > peak {
+                    peak = v;
+                }
             }
         }
         buffer.push(peak);
@@ -146,10 +154,10 @@ fn generate_pwv2_section(preview: &WaveformPreview) -> Vec<u8> {
 /// Generate PQTZ (beat grid) section
 fn generate_pqtz_section(beat_grid: &BeatGrid) -> Vec<u8> {
     let mut buffer = Vec::new();
-    
+
     // Tag
     buffer.extend_from_slice(PQTZ_TAG);
-    
+
     // Calculate section size
     // Header: fourcc(4) + len_header(4) + len_tag(4) + unk1(4) + unk2(4) + len_beats(4) = 24 bytes
     // Each beat: 8 bytes (beat_number u16, tempo u16, time_ms u32)
@@ -157,17 +165,17 @@ fn generate_pqtz_section(beat_grid: &BeatGrid) -> Vec<u8> {
     let header_len = 24u32;
     let beat_data_len = beat_grid.beats.len() * 8;
     let section_len = 24 + beat_data_len;
-    
+
     buffer.extend_from_slice(&header_len.to_be_bytes());
     buffer.extend_from_slice(&(section_len as u32).to_be_bytes());
-    
+
     // unk1 = 0, unk2 = 0x00080000 (constant in golden; marks a valid beat grid)
     buffer.extend_from_slice(&0u32.to_be_bytes());
     buffer.extend_from_slice(&0x0008_0000u32.to_be_bytes());
-    
+
     // Beat count
     buffer.extend_from_slice(&(beat_grid.beats.len() as u32).to_be_bytes());
-    
+
     // Write beat entries
     for beat in &beat_grid.beats {
         // Beat number (1-4) as u16
@@ -177,32 +185,32 @@ fn generate_pqtz_section(beat_grid: &BeatGrid) -> Vec<u8> {
         // Time in milliseconds as u32
         buffer.extend_from_slice(&(beat.time_ms as u32).to_be_bytes());
     }
-    
+
     buffer
 }
 
 /// Generate PWAV (preview waveform) section - exactly 400 bytes of waveform data
 fn generate_pwav_section(preview: &WaveformPreview) -> Vec<u8> {
     let mut buffer = Vec::new();
-    
+
     // Tag
     buffer.extend_from_slice(PWAV_TAG);
-    
+
     // Header structure
     // fourcc(4) + len_header(4) + len_tag(4) + len_entries(4) + unk(4) = 20 bytes
     // len_header is header SIZE (20). field4 = 0x00010000 in golden.
     let header_len = 20u32;
     let section_len = 20u32 + 400; // Header + 400 bytes waveform
-    
+
     buffer.extend_from_slice(&header_len.to_be_bytes());
     buffer.extend_from_slice(&(section_len).to_be_bytes());
-    
+
     // Entry count (400)
     buffer.extend_from_slice(&400u32.to_be_bytes());
-    
+
     // unk = 0x00010000 (constant in golden)
     buffer.extend_from_slice(&0x0001_0000u32.to_be_bytes());
-    
+
     // Waveform data - exactly 400 bytes
     for i in 0..400 {
         if i < preview.columns.len() {
@@ -211,17 +219,17 @@ fn generate_pwav_section(preview: &WaveformPreview) -> Vec<u8> {
             buffer.push(0);
         }
     }
-    
+
     buffer
 }
 
 /// Generate PWV5 (detail color waveform) section
 fn generate_pwv5_section(detail: &WaveformDetail) -> Vec<u8> {
     let mut buffer = Vec::new();
-    
+
     // Tag
     buffer.extend_from_slice(PWV5_TAG);
-    
+
     // Header (24 bytes / 0x18) per DeepSymmetry spec:
     //   fourcc(4) | len_header(4) | len_tag(4) | len_entry_bytes(4) | len_entries(4) | unknown(4)
     // then data. len_entry_bytes is ALWAYS 2 for PWV5. The previous code omitted
@@ -232,20 +240,20 @@ fn generate_pwv5_section(detail: &WaveformDetail) -> Vec<u8> {
     let len_entries = detail.entries.len() as u32;
     let data_size = detail.entries.len() * 2; // 2 bytes per entry
     let section_len = 24 + data_size;
-    
+
     buffer.extend_from_slice(&header_len.to_be_bytes());
     buffer.extend_from_slice(&(section_len as u32).to_be_bytes());
     buffer.extend_from_slice(&len_entry_bytes.to_be_bytes());
     buffer.extend_from_slice(&len_entries.to_be_bytes());
-    
+
     // Unknown constant (bytes 14-17); spec: "may always have the value 00960305"
     buffer.extend_from_slice(&0x0096_0305u32.to_be_bytes());
-    
+
     // Waveform entries (2 bytes each, big-endian)
     for entry in &detail.entries {
         buffer.extend_from_slice(&entry.to_bytes());
     }
-    
+
     buffer
 }
 
@@ -254,30 +262,30 @@ fn generate_pwv5_section(detail: &WaveformDetail) -> Vec<u8> {
 /// the NUL-terminated UTF-16BE path (the terminator is included in the count).
 fn generate_ppth_section(file_path: &str) -> Vec<u8> {
     let mut buffer = Vec::new();
-    
+
     // Tag
     buffer.extend_from_slice(PPTH_TAG);
-    
+
     // Encode path as UTF-16BE, NUL-terminated (golden includes the terminator)
     let mut path_utf16: Vec<u16> = file_path.encode_utf16().collect();
     path_utf16.push(0);
     let path_bytes_len = path_utf16.len() * 2;
-    
+
     let header_len = 16u32;
     let section_len = 16 + path_bytes_len;
-    
+
     buffer.extend_from_slice(&header_len.to_be_bytes());
     buffer.extend_from_slice(&(section_len as u32).to_be_bytes());
-    
+
     // Path length in BYTES, including the UTF-16 NUL terminator.
     // (Previously wrote the character count and omitted the terminator.)
     buffer.extend_from_slice(&(path_bytes_len as u32).to_be_bytes());
-    
+
     // Path data (UTF-16BE)
     for ch in path_utf16 {
         buffer.extend_from_slice(&ch.to_be_bytes());
     }
-    
+
     buffer
 }
 
@@ -301,7 +309,8 @@ fn generate_pwv3_section(detail: &WaveformDetail) -> Vec<u8> {
     buffer.extend_from_slice(&0x0096_0000u32.to_be_bytes());
 
     for entry in &detail.entries {
-        let whiteness = (((entry.red as u16 + entry.green as u16 + entry.blue as u16) / 3) as u8).min(7);
+        let whiteness =
+            (((entry.red as u16 + entry.green as u16 + entry.blue as u16) / 3) as u8).min(7);
         let height = entry.height & 0x1F;
         buffer.push((whiteness << 5) | height);
     }
@@ -355,9 +364,9 @@ fn generate_pwv7_section(detail: &WaveformDetail) -> Vec<u8> {
         let scale = |ch: u8| -> u8 {
             ((ch as u32 & 0x07) * (e.height as u32 & 0x1F) * 127 / (7 * 31)).min(127) as u8
         };
-        buffer.push(scale(e.red));   // low
+        buffer.push(scale(e.red)); // low
         buffer.push(scale(e.green)); // mid
-        buffer.push(scale(e.blue));  // high
+        buffer.push(scale(e.blue)); // high
     }
     buffer
 }
@@ -463,7 +472,7 @@ fn generate_pco2_section(cue_points: &[CuePoint]) -> Vec<u8> {
         buffer.extend_from_slice(&section);
     }
 
-    // Generate memory cue entries  
+    // Generate memory cue entries
     if !memory_cues.is_empty() {
         let section = generate_pco2_entries(&memory_cues, false);
         buffer.extend_from_slice(&section);
@@ -482,10 +491,13 @@ fn generate_pco2_entries(cues: &[&CuePoint], is_hot_cue: bool) -> Vec<u8> {
     // Calculate entry sizes
     // Each extended entry is at least 56 bytes for hot cues (with color)
     let base_entry_size = if is_hot_cue { 56usize } else { 40usize };
-    let entries_size: usize = cues.iter().map(|cue| {
-        let comment_len = cue.comment.as_ref().map(|c| c.len() + 4).unwrap_or(0);
-        base_entry_size + comment_len
-    }).sum();
+    let entries_size: usize = cues
+        .iter()
+        .map(|cue| {
+            let comment_len = cue.comment.as_ref().map(|c| c.len() + 4).unwrap_or(0);
+            base_entry_size + comment_len
+        })
+        .sum();
 
     // Header: 4 (tag) + 4 (header_len) + 4 (section_len) + 4 (type) + 2 (unknown) + 2 (count) = 20 bytes
     let header_len = 20u32 - 4;
@@ -508,7 +520,11 @@ fn generate_pco2_entries(cues: &[&CuePoint], is_hot_cue: bool) -> Vec<u8> {
 
         // Calculate entry length
         let comment_len = cue.comment.as_ref().map(|c| c.len() + 4).unwrap_or(0);
-        let entry_len = if is_hot_cue { 56 + comment_len } else { 40 + comment_len };
+        let entry_len = if is_hot_cue {
+            56 + comment_len
+        } else {
+            40 + comment_len
+        };
         buffer.extend_from_slice(&((entry_len - 4) as u32).to_be_bytes());
 
         // Hot cue number (0 for memory, 1-8 for hot cue A-H)
@@ -550,11 +566,13 @@ fn generate_pco2_entries(cues: &[&CuePoint], is_hot_cue: bool) -> Vec<u8> {
 
         // Hot cue color data (for hot cues only)
         if is_hot_cue {
-            let color = cue.color.unwrap_or_else(|| HotCueColor::default_for_slot(cue.hot_cue));
-            
+            let color = cue
+                .color
+                .unwrap_or_else(|| HotCueColor::default_for_slot(cue.hot_cue));
+
             // Color palette index (1 byte)
             buffer.push(color.palette_index);
-            
+
             // RGB values (3 bytes)
             buffer.push(color.red);
             buffer.push(color.green);
@@ -730,8 +748,8 @@ pub fn generate_2ex_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::track::{Beat, WaveformColumn, WaveformColorEntry};
-    
+    use crate::track::{Beat, WaveformColorEntry, WaveformColumn};
+
     #[test]
     fn test_anlz_path_generation() {
         assert_eq!(
@@ -747,67 +765,82 @@ mod tests {
             "PIONEER/USBANLZ/P018/00001234/ANLZ0000.DAT"
         );
     }
-    
+
     #[test]
     fn test_pqtz_section() {
         let grid = BeatGrid {
             bpm: 128.0,
             first_beat_ms: 100.0,
             beats: vec![
-                Beat { beat_number: 1, time_ms: 100.0, tempo_100: 12800 },
-                Beat { beat_number: 2, time_ms: 568.75, tempo_100: 12800 },
+                Beat {
+                    beat_number: 1,
+                    time_ms: 100.0,
+                    tempo_100: 12800,
+                },
+                Beat {
+                    beat_number: 2,
+                    time_ms: 568.75,
+                    tempo_100: 12800,
+                },
             ],
         };
-        
+
         let section = generate_pqtz_section(&grid);
-        
+
         // Check tag
         assert_eq!(&section[0..4], b"PQTZ");
-        
+
         // Check beat count (at offset 20, after header fields)
         let count = u32::from_be_bytes([section[20], section[21], section[22], section[23]]);
         assert_eq!(count, 2);
     }
-    
+
     #[test]
     fn test_pwav_section() {
         let preview = WaveformPreview {
             columns: vec![
-                WaveformColumn { height: 15, whiteness: 3 },
-                WaveformColumn { height: 20, whiteness: 5 },
+                WaveformColumn {
+                    height: 15,
+                    whiteness: 3,
+                },
+                WaveformColumn {
+                    height: 20,
+                    whiteness: 5,
+                },
             ],
         };
-        
+
         let section = generate_pwav_section(&preview);
-        
+
         // Check tag
         assert_eq!(&section[0..4], b"PWAV");
-        
+
         // Section should be header (20) + 400 bytes
         let section_len = u32::from_be_bytes([section[8], section[9], section[10], section[11]]);
         assert_eq!(section_len, 420);
     }
-    
+
     #[test]
     fn test_ppth_section() {
         let section = generate_ppth_section("/Contents/test.mp3");
-        
+
         // Check tag
         assert_eq!(&section[0..4], b"PPTH");
-        
+
         // Path length is in BYTES: (18 chars + NUL) * 2 (UTF-16) = 38
         let path_len = u32::from_be_bytes([section[12], section[13], section[14], section[15]]);
         assert_eq!(path_len, 38);
         let len_header = u32::from_be_bytes([section[4], section[5], section[6], section[7]]);
         assert_eq!(len_header, 16);
     }
-    
+
     #[test]
     fn test_complete_dat_file() {
         let grid = BeatGrid::constant_tempo(128.0, 0.0, 5000.0);
         let waveform = Waveform::default();
 
-        let data = generate_dat_file(&grid, &waveform, "/Contents/test.mp3", 5_000_000, 220_500).unwrap();
+        let data =
+            generate_dat_file(&grid, &waveform, "/Contents/test.mp3", 5_000_000, 220_500).unwrap();
 
         // Should start with PMAI
         assert_eq!(&data[0..4], b"PMAI");
@@ -820,8 +853,18 @@ mod tests {
     fn test_pwv3_section() {
         let detail = WaveformDetail {
             entries: vec![
-                WaveformColorEntry { red: 5, green: 3, blue: 7, height: 20 },
-                WaveformColorEntry { red: 2, green: 6, blue: 4, height: 15 },
+                WaveformColorEntry {
+                    red: 5,
+                    green: 3,
+                    blue: 7,
+                    height: 20,
+                },
+                WaveformColorEntry {
+                    red: 2,
+                    green: 6,
+                    blue: 4,
+                    height: 15,
+                },
             ],
         };
 
@@ -880,7 +923,8 @@ mod tests {
         let waveform = Waveform::default();
         let cues: Vec<CuePoint> = Vec::new();
 
-        let dat_data = generate_dat_file(&grid, &waveform, "/Contents/test.mp3", 5_000_000, 220_500).unwrap();
+        let dat_data =
+            generate_dat_file(&grid, &waveform, "/Contents/test.mp3", 5_000_000, 220_500).unwrap();
         let ext_data = generate_ext_file(&grid, &waveform, "/Contents/test.mp3", &cues).unwrap();
 
         // EXT should be larger than DAT (includes PWV3)
@@ -895,16 +939,14 @@ mod tests {
     fn test_ext_file_with_cues() {
         let grid = BeatGrid::constant_tempo(128.0, 0.0, 5000.0);
         let waveform = Waveform::default();
-        let cues = vec![
-            CuePoint {
-                hot_cue: 1,
-                cue_type: CueType::Cue,
-                time_ms: 1000.0,
-                loop_ms: 0.0,
-                comment: None,
-                color: None,
-            },
-        ];
+        let cues = vec![CuePoint {
+            hot_cue: 1,
+            cue_type: CueType::Cue,
+            time_ms: 1000.0,
+            loop_ms: 0.0,
+            comment: None,
+            color: None,
+        }];
 
         let ext_data = generate_ext_file(&grid, &waveform, "/Contents/test.mp3", &cues).unwrap();
 

@@ -6,31 +6,31 @@ use thiserror::Error;
 pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    
+
     #[error("Binary format error: {0}")]
     BinRw(String),
-    
+
     #[error("Audio decoding error: {0}")]
     AudioDecode(String),
-    
+
     #[error("Analysis error: {0}")]
     Analysis(String),
-    
+
     #[error("Invalid track: {0}")]
     InvalidTrack(String),
-    
+
     #[error("Cache error: {0}")]
     Cache(String),
-    
+
     #[error("Path error: {0}")]
     Path(String),
-    
+
     #[error("String encoding error: {0}")]
     StringEncoding(String),
-    
+
     #[error("Page overflow: {0}")]
     PageOverflow(String),
-    
+
     #[error("Database error: {0}")]
     Database(String),
 

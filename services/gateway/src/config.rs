@@ -47,7 +47,10 @@ impl Config {
                 let bytes = hex::decode(&hex_str)
                     .map_err(|e| anyhow!("invalid hex for COOKIE_ENCRYPTION_KEY_HEX: {e}"))?;
                 if bytes.len() != 32 {
-                    return Err(anyhow!("COOKIE_ENCRYPTION_KEY_HEX must be exactly 32 bytes (64 hex chars), got {}", bytes.len()));
+                    return Err(anyhow!(
+                        "COOKIE_ENCRYPTION_KEY_HEX must be exactly 32 bytes (64 hex chars), got {}",
+                        bytes.len()
+                    ));
                 }
                 let mut key = [0u8; 32];
                 key.copy_from_slice(&bytes);

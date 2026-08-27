@@ -1,14 +1,14 @@
+use crate::client::{get_api_url, load_session};
+use crate::tui::ExportProgress;
 use anyhow::{Context, Result};
+use bvault_transfer::{reconcile_export, saf, ReconcileOptions, UsbTarget};
 use dialoguer::{theme::ColorfulTheme, Select};
-use sysinfo::Disks;
+use reqwest::Client;
+use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use bvault_transfer::{reconcile_export, saf, ReconcileOptions, UsbTarget};
-use crate::client::{load_session, get_api_url};
-use crate::tui::ExportProgress;
-use serde::Deserialize;
+use sysinfo::Disks;
 use uuid::Uuid;
-use reqwest::Client;
 
 #[derive(Deserialize)]
 struct CreateExportResponse {
@@ -17,7 +17,8 @@ struct CreateExportResponse {
 }
 
 pub async fn run_export_flow(playlist_name: &str, usb: bool, path: Option<String>) -> Result<()> {
-    let session = load_session().context("You are not logged in. Please run `bvault login` first.")?;
+    let session =
+        load_session().context("You are not logged in. Please run `bvault login` first.")?;
     let base_url = get_api_url();
 
     if !usb && path.is_none() {
@@ -39,9 +40,11 @@ pub async fn run_export_flow(playlist_name: &str, usb: bool, path: Option<String
     let http = Client::new();
 
     // Let's fetch all playlists to find the ID
-    let playlists_res = http.get(&format!("{}/playlists", base_url))
+    let playlists_res = http
+        .get(&format!("{}/playlists", base_url))
         .header("Authorization", format!("Bearer {}", session.token))
-        .send().await?;
+        .send()
+        .await?;
 
     #[derive(Deserialize)]
     struct Playlist {
@@ -50,7 +53,9 @@ pub async fn run_export_flow(playlist_name: &str, usb: bool, path: Option<String
     }
 
     let playlists: Vec<Playlist> = playlists_res.json().await.unwrap_or_default();
-    let pl_id = playlists.into_iter().find(|p| p.name == playlist_name)
+    let pl_id = playlists
+        .into_iter()
+        .find(|p| p.name == playlist_name)
         .map(|p| p.id)
         .context(format!("Playlist '{}' not found", playlist_name))?;
 
@@ -60,10 +65,12 @@ pub async fn run_export_flow(playlist_name: &str, usb: bool, path: Option<String
         "playlist_ids": [pl_id]
     });
 
-    let build_res = http.post(&format!("{}/exports", base_url))
+    let build_res = http
+        .post(&format!("{}/exports", base_url))
         .header("Authorization", format!("Bearer {}", session.token))
         .json(&export_payload)
-        .send().await?;
+        .send()
+        .await?;
 
     if !build_res.status().is_success() {
         anyhow::bail!("Failed to build export: {}", build_res.status());
@@ -100,7 +107,9 @@ pub async fn run_export_flow(playlist_name: &str, usb: bool, path: Option<String
 async fn resolve_target(path: Option<String>) -> Result<UsbTarget> {
     if let Some(p) = path {
         // Tier 3: explicit path — trusted verbatim on every platform.
-        return Ok(UsbTarget::Fs { root: PathBuf::from(p) });
+        return Ok(UsbTarget::Fs {
+            root: PathBuf::from(p),
+        });
     }
 
     if saf::detect() {
@@ -156,7 +165,9 @@ async fn resolve_saf_target() -> Result<UsbTarget> {
             .interact()?;
 
         if selection == grant_idx {
-            println!("  Opening the Android folder picker — select your USB's root and allow access.");
+            println!(
+                "  Opening the Android folder picker — select your USB's root and allow access."
+            );
             saf::manage_dir().await?;
             continue;
         }

@@ -1,22 +1,25 @@
 use anyhow::{Context, Result};
+use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use std::path::PathBuf;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
-use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::client::{get_api_url, load_session};
 use crate::playlist::{fetch_playlist_by_name, Track};
 use dialoguer::{theme::ColorfulTheme, Select};
 
 pub async fn run_download_flow(query: &str, is_playlist: bool, out_dir: &str) -> Result<()> {
-    let session = load_session().context("You are not logged in. Please run `bvault login` first.")?;
+    let session =
+        load_session().context("You are not logged in. Please run `bvault login` first.")?;
     let base_url = get_api_url();
     let http = Client::new();
 
     let out_path = PathBuf::from(out_dir);
     if !out_path.exists() {
-        fs::create_dir_all(&out_path).await.context("Failed to create output directory")?;
+        fs::create_dir_all(&out_path)
+            .await
+            .context("Failed to create output directory")?;
     }
 
     let mut tracks_to_download = Vec::new(); // (hash, title)
@@ -24,7 +27,8 @@ pub async fn run_download_flow(query: &str, is_playlist: bool, out_dir: &str) ->
     // all_tracks no longer fetched upfront for non-playlist flow
 
     if is_playlist {
-        let playlist = fetch_playlist_by_name(&http, &base_url, &session.token, query).await?
+        let playlist = fetch_playlist_by_name(&http, &base_url, &session.token, query)
+            .await?
             .context(format!("Playlist '{}' not found", query))?;
 
         let playlist_hashes: Vec<String> = http
@@ -46,19 +50,28 @@ pub async fn run_download_flow(query: &str, is_playlist: bool, out_dir: &str) ->
 
         for hash in playlist_hashes {
             if let Some(t) = all_tracks.iter().find(|t| t.hash == hash) {
-                let title = format!("{} - {}", t.artist.as_deref().unwrap_or("Unknown"), t.title.as_deref().unwrap_or("Unknown"));
+                let title = format!(
+                    "{} - {}",
+                    t.artist.as_deref().unwrap_or("Unknown"),
+                    t.title.as_deref().unwrap_or("Unknown")
+                );
                 // Sanitize filename
-                let safe_title = title.replace(&['/', '\\', ':', '*', '?', '"', '<', '>', '|'][..], "_");
+                let safe_title =
+                    title.replace(&['/', '\\', ':', '*', '?', '"', '<', '>', '|'][..], "_");
                 tracks_to_download.push((hash.clone(), safe_title));
             }
         }
-        
+
         if tracks_to_download.is_empty() {
             println!("Playlist is empty.");
             return Ok(());
         }
     } else {
-        let queries: Vec<&str> = query.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        let queries: Vec<&str> = query
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
         for q in queries {
             let res = http
                 .get(&format!("{}/tracks", base_url))
@@ -80,7 +93,11 @@ pub async fn run_download_flow(query: &str, is_playlist: bool, out_dir: &str) ->
                 println!("? Found multiple partial matches for '{}':", q);
                 let mut items = vec![];
                 for t in &top_candidates {
-                    items.push(format!("{} - {}", t.artist.as_deref().unwrap_or("Unknown"), t.title.as_deref().unwrap_or("Unknown")));
+                    items.push(format!(
+                        "{} - {}",
+                        t.artist.as_deref().unwrap_or("Unknown"),
+                        t.title.as_deref().unwrap_or("Unknown")
+                    ));
                 }
                 items.push("Skip".to_string());
 
@@ -99,19 +116,27 @@ pub async fn run_download_flow(query: &str, is_playlist: bool, out_dir: &str) ->
             };
 
             if let Some(t) = selected_track {
-                let title = format!("{} - {}", t.artist.as_deref().unwrap_or("Unknown"), t.title.as_deref().unwrap_or("Unknown"));
-                let safe_title = title.replace(&['/', '\\', ':', '*', '?', '"', '<', '>', '|'][..], "_");
+                let title = format!(
+                    "{} - {}",
+                    t.artist.as_deref().unwrap_or("Unknown"),
+                    t.title.as_deref().unwrap_or("Unknown")
+                );
+                let safe_title =
+                    title.replace(&['/', '\\', ':', '*', '?', '"', '<', '>', '|'][..], "_");
                 tracks_to_download.push((t.hash, safe_title));
             }
         }
-        
+
         if tracks_to_download.is_empty() {
             println!("No tracks to download.");
             return Ok(());
         }
     }
 
-    println!("Starting download of {} tracks...", tracks_to_download.len());
+    println!(
+        "Starting download of {} tracks...",
+        tracks_to_download.len()
+    );
 
     for (hash, title) in tracks_to_download {
         let target_file = out_path.join(format!("{}.mp3", title));

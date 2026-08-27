@@ -18,7 +18,7 @@
 //! - Byte 27: page_flags
 
 use crate::error::{Error, Result};
-use crate::page::{PAGE_SIZE, HEAP_START};
+use crate::page::{HEAP_START, PAGE_SIZE};
 
 /// Statistics about a PDB file
 #[derive(Debug, Default, Clone)]
@@ -113,8 +113,7 @@ pub fn validate_pdb(data: &[u8]) -> ValidationResult {
     if page_size != PAGE_SIZE as u32 {
         result.add_error(format!(
             "Invalid page_size in header: {} (expected {})",
-            page_size,
-            PAGE_SIZE
+            page_size, PAGE_SIZE
         ));
         return result;
     }
@@ -137,8 +136,7 @@ pub fn validate_pdb(data: &[u8]) -> ValidationResult {
     if next_unused_page > actual_pages {
         result.add_error(format!(
             "Header next_unused_page ({}) exceeds actual page count ({})",
-            next_unused_page,
-            actual_pages
+            next_unused_page, actual_pages
         ));
     }
 
