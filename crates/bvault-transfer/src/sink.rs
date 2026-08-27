@@ -16,7 +16,7 @@
 //! the only way to reach a nested path is to walk it one segment at a time:
 //!
 //! - `termux-saf-ls   <dir-uri>`            -> JSON of the dir's children, each
-//!                                            with its own `uri`.
+//!   with its own `uri`.
 //! - `termux-saf-mkdir <parent-uri> <name>` -> create one child directory.
 //! - `termux-saf-write <parent-uri> <name>` -> create+stream a file from stdin.
 //! - `termux-saf-rm    <parent-uri> <name>` -> remove one child.
@@ -95,16 +95,16 @@ impl UsbSink {
     /// then `commit()` (or `abort()` on error).
     pub async fn create(&self, rel: &str) -> Result<UsbFileWriter> {
         match self {
-            UsbSink::Fs(s) => Ok(UsbFileWriter::Fs(s.create(rel).await?)),
-            UsbSink::Saf(s) => Ok(UsbFileWriter::Saf(s.create(rel).await?)),
+            UsbSink::Fs(s) => Ok(UsbFileWriter::Fs(Box::new(s.create(rel).await?))),
+            UsbSink::Saf(s) => Ok(UsbFileWriter::Saf(Box::new(s.create(rel).await?))),
         }
     }
 }
 
 /// An in-flight file write. Feed it with `write_all`, then `commit` or `abort`.
 pub enum UsbFileWriter {
-    Fs(FsWriter),
-    Saf(SafWriter),
+    Fs(Box<FsWriter>),
+    Saf(Box<SafWriter>),
 }
 
 impl UsbFileWriter {

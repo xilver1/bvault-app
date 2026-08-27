@@ -57,6 +57,15 @@ pub struct PlaylistInfo {
     pub track_ids: Vec<u32>,
 }
 
+/// Result of building a single table
+struct TableBuildResult {
+    index_page: Vec<u8>,
+    data_pages: Vec<Vec<u8>>,
+    index_page_idx: u32,
+    last_data_page_idx: u32,
+    new_sequence: u32,
+}
+
 impl PdbBuilder {
     pub fn new() -> Self {
         Self {
@@ -267,22 +276,22 @@ impl PdbBuilder {
 
         // Build all 20 tables in order
         for page_type in PageType::all_types() {
-            let (index_page, data_pages, index_page_idx, last_data_page, new_sequence) =
+            let result =
                 self.build_table_with_sequence(*page_type, &mut next_page_index, sequence)?;
 
             // Save info for later
             table_infos.push(TableInfo {
                 page_type: *page_type,
-                index_page_idx,
-                last_data_page,
+                index_page_idx: result.index_page_idx,
+                last_data_page: result.last_data_page_idx,
             });
 
             // Update sequence for next table
-            sequence = new_sequence;
+            sequence = result.new_sequence;
 
             // Add pages
-            all_pages.push(index_page);
-            all_pages.extend(data_pages);
+            all_pages.push(result.index_page);
+            all_pages.extend(result.data_pages);
         }
 
         let page_count = next_page_index; // first index past all real pages
@@ -351,13 +360,12 @@ impl PdbBuilder {
     }
 
     /// Build a single table with sequence tracking
-    /// Returns: (index_page, data_pages, index_page_idx, last_data_page_idx, new_sequence)
     fn build_table_with_sequence(
         &self,
         page_type: PageType,
         next_idx: &mut u32,
         mut sequence: u32,
-    ) -> Result<(Vec<u8>, Vec<Vec<u8>>, u32, u32, u32)> {
+    ) -> Result<TableBuildResult> {
         let index_page_idx = *next_idx;
         *next_idx += 1;
 
@@ -416,13 +424,13 @@ impl PdbBuilder {
             index_page_idx // Empty tables: last == first
         };
 
-        Ok((
+        Ok(TableBuildResult {
             index_page,
             data_pages,
             index_page_idx,
-            last_data_page,
-            sequence,
-        ))
+            last_data_page_idx: last_data_page,
+            new_sequence: sequence,
+        })
     }
 
     /// Build empty data page (for tables with no content)

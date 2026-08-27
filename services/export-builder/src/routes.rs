@@ -93,8 +93,6 @@ pub fn build_router(state: AppState) -> Router {
 struct CreateExport {
     playlist_ids: Vec<Uuid>,
     #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
     profile_name: Option<String>,
 }
 
