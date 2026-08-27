@@ -1,7 +1,6 @@
 use bvault_transfer::TransferProgress;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::Mutex;
 
 pub struct ExportProgress {

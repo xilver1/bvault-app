@@ -79,7 +79,7 @@ impl RawStore {
             std::fs::create_dir_all(parent)?;
         }
 
-        if let Err(_) = std::fs::rename(&temp_path, &target_path) {
+        if std::fs::rename(&temp_path, &target_path).is_err() {
             // Cross-device link fallback: copy to a temp file on the same mount, then atomic rename
             let dest_tmp = target_path.with_extension("tmp");
             std::fs::copy(&temp_path, &dest_tmp)?;

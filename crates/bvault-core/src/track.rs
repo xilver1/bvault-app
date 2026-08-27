@@ -239,8 +239,10 @@ impl BeatGrid {
 /// Cue point type
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[repr(u8)]
+#[derive(Default)]
 pub enum CueType {
     /// Regular cue point
+    #[default]
     Cue = 1,
     /// Fade-in point
     FadeIn = 2,
@@ -252,11 +254,6 @@ pub enum CueType {
     Loop = 5,
 }
 
-impl Default for CueType {
-    fn default() -> Self {
-        CueType::Cue
-    }
-}
 
 /// Hot cue color palette (63 colors supported by CDJs)
 /// Common colors: Green=0x00, Cyan=0x09, Orange=0x22, Red=0x2A, Purple=0x3E

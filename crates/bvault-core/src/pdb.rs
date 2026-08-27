@@ -1033,10 +1033,10 @@ impl PdbBuilder {
             encode_string(&analysis.title), // 17: title
             encode_string(""), // 18: unknown
             encode_string(
-                &analysis
+                analysis
                     .file_path
                     .split('/')
-                    .last()
+                    .next_back()
                     .unwrap_or(&analysis.file_path),
             ), // 19: filename
             encode_string(&analysis.file_path), // 20: file_path

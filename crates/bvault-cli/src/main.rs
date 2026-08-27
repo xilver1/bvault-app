@@ -1,6 +1,5 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing_subscriber;
 
 mod client;
 mod download;

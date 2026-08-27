@@ -32,7 +32,7 @@ pub async fn run_download_flow(query: &str, is_playlist: bool, out_dir: &str) ->
             .context(format!("Playlist '{}' not found", query))?;
 
         let playlist_hashes: Vec<String> = http
-            .get(&format!("{}/playlists/{}/hashes", base_url, playlist.id))
+            .get(format!("{}/playlists/{}/hashes", base_url, playlist.id))
             .header("Authorization", format!("Bearer {}", session.token))
             .send()
             .await?
@@ -40,7 +40,7 @@ pub async fn run_download_flow(query: &str, is_playlist: bool, out_dir: &str) ->
             .await?;
 
         let all_tracks: Vec<Track> = http
-            .get(&format!("{}/tracks", base_url))
+            .get(format!("{}/tracks", base_url))
             .header("Authorization", format!("Bearer {}", session.token))
             .query(&[("limit", "100000")]) // Fetch all tracks to match playlist hashes
             .send()
@@ -74,7 +74,7 @@ pub async fn run_download_flow(query: &str, is_playlist: bool, out_dir: &str) ->
             .collect();
         for q in queries {
             let res = http
-                .get(&format!("{}/tracks", base_url))
+                .get(format!("{}/tracks", base_url))
                 .header("Authorization", format!("Bearer {}", session.token))
                 .query(&[("limit", "10"), ("q", q)])
                 .send()
@@ -147,7 +147,7 @@ pub async fn run_download_flow(query: &str, is_playlist: bool, out_dir: &str) ->
 
         println!("Downloading: {}.mp3", title);
         let mut res = http
-            .get(&format!("{}/tracks/{}/raw", base_url, hash))
+            .get(format!("{}/tracks/{}/raw", base_url, hash))
             .header("Authorization", format!("Bearer {}", session.token))
             .send()
             .await?;

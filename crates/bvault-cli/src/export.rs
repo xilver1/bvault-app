@@ -41,7 +41,7 @@ pub async fn run_export_flow(playlist_name: &str, usb: bool, path: Option<String
 
     // Let's fetch all playlists to find the ID
     let playlists_res = http
-        .get(&format!("{}/playlists", base_url))
+        .get(format!("{}/playlists", base_url))
         .header("Authorization", format!("Bearer {}", session.token))
         .send()
         .await?;
@@ -66,7 +66,7 @@ pub async fn run_export_flow(playlist_name: &str, usb: bool, path: Option<String
     });
 
     let build_res = http
-        .post(&format!("{}/exports", base_url))
+        .post(format!("{}/exports", base_url))
         .header("Authorization", format!("Bearer {}", session.token))
         .json(&export_payload)
         .send()

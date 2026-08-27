@@ -29,7 +29,7 @@ pub async fn fetch_playlist_by_name(
     name: &str,
 ) -> Result<Option<Playlist>> {
     let playlists: Vec<Playlist> = client
-        .get(&format!("{}/playlists", base_url))
+        .get(format!("{}/playlists", base_url))
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await?
@@ -74,7 +74,7 @@ pub async fn run_playlist_list_flow() -> Result<()> {
     let http = Client::new();
 
     let playlists: Vec<Playlist> = http
-        .get(&format!("{}/playlists", base_url))
+        .get(format!("{}/playlists", base_url))
         .header("Authorization", format!("Bearer {}", session.token))
         .send()
         .await?
@@ -112,7 +112,7 @@ pub async fn run_playlist_view_flow(name: &str) -> Result<()> {
         .context(format!("Playlist '{}' not found", name))?;
 
     let hashes: Vec<String> = http
-        .get(&format!("{}/playlists/{}/hashes", base_url, playlist.id))
+        .get(format!("{}/playlists/{}/hashes", base_url, playlist.id))
         .header("Authorization", format!("Bearer {}", session.token))
         .send()
         .await?
@@ -120,7 +120,7 @@ pub async fn run_playlist_view_flow(name: &str) -> Result<()> {
         .await?;
 
     let all_tracks: Vec<Track> = http
-        .get(&format!("{}/tracks", base_url))
+        .get(format!("{}/tracks", base_url))
         .header("Authorization", format!("Bearer {}", session.token))
         .send()
         .await?
@@ -164,7 +164,7 @@ pub async fn run_playlist_add_flow(name: &str, add: &Option<String>) -> Result<(
             .collect();
         for q in queries {
             let res = http
-                .get(&format!("{}/tracks", base_url))
+                .get(format!("{}/tracks", base_url))
                 .header("Authorization", format!("Bearer {}", session.token))
                 .query(&[("limit", "10"), ("q", q)])
                 .send()
@@ -229,7 +229,7 @@ pub async fn run_playlist_add_flow(name: &str, add: &Option<String>) -> Result<(
     });
 
     let res = http
-        .post(&format!("{}/playlists", base_url))
+        .post(format!("{}/playlists", base_url))
         .header("Authorization", format!("Bearer {}", session.token))
         .json(&payload)
         .send()
@@ -255,7 +255,7 @@ pub async fn run_playlist_remove_flow(name: &str, tracks_str: &str) -> Result<()
         .context(format!("Playlist '{}' not found", name))?;
 
     let playlist_hashes: Vec<String> = http
-        .get(&format!("{}/playlists/{}/hashes", base_url, playlist.id))
+        .get(format!("{}/playlists/{}/hashes", base_url, playlist.id))
         .header("Authorization", format!("Bearer {}", session.token))
         .send()
         .await?
@@ -263,7 +263,7 @@ pub async fn run_playlist_remove_flow(name: &str, tracks_str: &str) -> Result<()
         .await?;
 
     let all_tracks: Vec<Track> = http
-        .get(&format!("{}/tracks", base_url))
+        .get(format!("{}/tracks", base_url))
         .header("Authorization", format!("Bearer {}", session.token))
         .send()
         .await?
@@ -353,7 +353,7 @@ pub async fn run_playlist_remove_flow(name: &str, tracks_str: &str) -> Result<()
     });
 
     let res = http
-        .post(&format!("{}/playlists/{}/remove", base_url, playlist.id))
+        .post(format!("{}/playlists/{}/remove", base_url, playlist.id))
         .header("Authorization", format!("Bearer {}", session.token))
         .json(&payload)
         .send()
@@ -379,7 +379,7 @@ pub async fn run_playlist_delete_flow(name: &str) -> Result<()> {
         .context(format!("Playlist '{}' not found", name))?;
 
     let res = http
-        .delete(&format!("{}/playlists/{}", base_url, playlist.id))
+        .delete(format!("{}/playlists/{}", base_url, playlist.id))
         .header("Authorization", format!("Bearer {}", session.token))
         .send()
         .await?;

@@ -17,7 +17,7 @@ pub async fn run_logout_flow() -> Result<()> {
     let http = Client::new();
 
     let _res = http
-        .post(&format!("{}/auth/logout", base_url))
+        .post(format!("{}/auth/logout", base_url))
         .header("Authorization", format!("Bearer {}", session.token))
         .send()
         .await;

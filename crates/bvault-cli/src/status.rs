@@ -62,7 +62,7 @@ async fn run_global_status() -> Result<()> {
     let http = Client::new();
 
     let res = http
-        .get(&format!("{}/status", base_url))
+        .get(format!("{}/status", base_url))
         .header("Authorization", format!("Bearer {}", session.token))
         .send()
         .await?;
@@ -194,7 +194,7 @@ async fn run_analysis_status() -> Result<()> {
 
     loop {
         let res = http
-            .get(&format!("{}/status", base_url))
+            .get(format!("{}/status", base_url))
             .header("Authorization", format!("Bearer {}", session.token))
             .send()
             .await?;

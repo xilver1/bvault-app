@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use dialoguer::{theme::ColorfulTheme, Input, Password};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -32,7 +32,7 @@ pub async fn run_login_flow() -> Result<()> {
     let http = Client::new();
 
     let res = http
-        .post(&format!("{}/auth/login", base_url))
+        .post(format!("{}/auth/login", base_url))
         .json(&LoginRequest {
             username: &username,
             password: &password,

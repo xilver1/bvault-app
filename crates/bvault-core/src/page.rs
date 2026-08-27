@@ -266,11 +266,7 @@ impl PageBuilder {
         let index_size = num_groups * ROW_GROUP_SIZE;
         let index_start = PAGE_SIZE - index_size;
 
-        if self.heap_pos >= index_start {
-            0
-        } else {
-            index_start - self.heap_pos
-        }
+        index_start.saturating_sub(self.heap_pos)
     }
 
     /// Check if adding data of given size would overflow
@@ -422,7 +418,7 @@ impl PageBuilder {
         let num_groups = if self.row_offsets.is_empty() {
             1
         } else {
-            (self.row_offsets.len() + ROWS_PER_GROUP - 1) / ROWS_PER_GROUP
+            self.row_offsets.len().div_ceil(ROWS_PER_GROUP)
         };
 
         for group_idx in 0..num_groups {
