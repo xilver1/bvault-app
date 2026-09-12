@@ -21,6 +21,7 @@
 //! already knows — nothing bvault-specific to learn.
 
 mod propagation;
+mod spans;
 
 #[cfg(feature = "http-server")]
 pub mod http;
@@ -29,6 +30,7 @@ pub use propagation::{
     context_from_traceparent, current_traceparent, extract_context, inject_into_headers,
     set_parent, TRACEPARENT,
 };
+pub use spans::{client_span, producer_span, record_client_outcome};
 
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{SpanExporter, WithExportConfig};

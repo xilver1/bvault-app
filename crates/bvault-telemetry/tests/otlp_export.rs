@@ -78,6 +78,37 @@ fn spans_reach_an_otlp_http_collector() {
         "the consumer gets its own span id, not the producer's"
     );
 
+    // Tempo draws the queue edge by pairing a `producer` span with the
+    // `consumer` span it parents. That holds only if the traceparent stored on
+    // the job row is captured *inside* the producer span — capture it one level
+    // up, in the request span, and the pairing silently fails: nodes, no edges.
+    let (request_span_id, producer_traceparent, producer_span_id) =
+        tracing::info_span!("post-analyze").in_scope(|| {
+            let request = bvault_telemetry::current_traceparent().expect("request span");
+            let producer = bvault_telemetry::producer_span("postgresql", "analysis");
+            let (stored, span_id) = producer.in_scope(|| {
+                let stored = bvault_telemetry::current_traceparent().expect("producer span");
+                let span_id = stored.split('-').nth(2).unwrap().to_string();
+                (stored, span_id)
+            });
+            (
+                request.split('-').nth(2).unwrap().to_string(),
+                stored,
+                span_id,
+            )
+        });
+
+    assert_ne!(
+        request_span_id, producer_span_id,
+        "the job row must carry the producer span, not the request span above it"
+    );
+
+    // The worker's half: a consumer span adopting the stored traceparent.
+    let consumer = tracing::info_span!("analysis-job", otel.kind = "consumer");
+    bvault_telemetry::set_parent(&consumer, Some(producer_traceparent.as_str()));
+    consumer.in_scope(|| tracing::info!("analyzed"));
+    drop(consumer);
+
     // Shutting the guard down flushes; without it the batch processor would
     // still be waiting out its scheduled delay.
     telemetry.shutdown();
@@ -107,6 +138,41 @@ fn spans_reach_an_otlp_http_collector() {
         find(&request, b"inner") && find(&request, b"outer"),
         "both spans should be in the export"
     );
+
+    // The pairing, checked on the wire rather than inferred: the producer's
+    // 8-byte span id must appear at least twice in the payload — once as its
+    // own `span_id`, once as the consumer's `parent_span_id`. One occurrence
+    // means the consumer never adopted it and the service graph would be empty.
+    let producer_id = decode_hex(&producer_span_id);
+    let occurrences = count(&request, &producer_id);
+    assert!(
+        occurrences >= 2,
+        "producer span id {producer_span_id} appears {occurrences}x; expected it          as both the producer's span_id and the consumer's parent_span_id"
+    );
+    // `otel.name` renames the span, so the exported name is the semantic one.
+    assert!(
+        find(&request, b"publish analysis"),
+        "producer span should be exported under its otel.name"
+    );
+    assert!(
+        find(&request, b"messaging.system"),
+        "messaging attributes should reach Tempo — they label the queue edge"
+    );
+}
+
+/// Span ids are 8 raw bytes in the protobuf; decode the hex form to match them.
+fn decode_hex(hex: &str) -> Vec<u8> {
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex span id"))
+        .collect()
+}
+
+fn count(haystack: &[u8], needle: &[u8]) -> usize {
+    haystack
+        .windows(needle.len())
+        .filter(|window| *window == needle)
+        .count()
 }
 
 /// Read one HTTP request: headers, then exactly `Content-Length` body bytes.

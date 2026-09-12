@@ -55,10 +55,16 @@ impl Worker {
     /// traceparent (enqueued before this shipped, or with tracing off) just
     /// starts its own.
     async fn process(self: Arc<Self>, job: Job) {
+        // The incoming half of the queue's service-graph edge. The messaging
+        // attributes must mirror the producer side in `Queue::enqueue`, since
+        // Tempo pairs producer↔consumer to draw gateway → analysis-worker.
         let span = tracing::info_span!(
             "analysis-job",
             otel.kind = "consumer",
             otel.status_code = Empty,
+            messaging.system = "postgresql",
+            messaging.operation.name = "process",
+            messaging.destination.name = JobKind::Analysis.as_str(),
             job.id = job.id,
             job.attempt = job.attempts,
             track.hash = %job.dedup_key,

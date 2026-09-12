@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio_util::io::ReaderStream;
 use tower_http::trace::TraceLayer;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use bvault_jobs::{AnalysisJob, Job, JobKind, JobStatus, YtDlpIngestJob};
@@ -1043,6 +1044,11 @@ struct ClaimRequest {
 struct ClaimResponse {
     id: i64,
     payload: serde_json::Value,
+    /// The trace context stored when this job was enqueued. The Rust worker
+    /// reads the column directly; yt-dlp-ingest claims over HTTP, so it needs
+    /// the value handed to it or its spans start a trace of their own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    traceparent: Option<String>,
 }
 
 async fn claim_job(
@@ -1058,6 +1064,7 @@ async fn claim_job(
     {
         Ok(Json(ClaimResponse {
             id: job.id,
+            traceparent: job.traceparent,
             payload: job.payload.0,
         })
         .into_response())
@@ -1077,24 +1084,44 @@ async fn search_ytdlp(
         .as_deref()
         .ok_or_else(|| GatewayError::BadRequest("yt-dlp service not configured".into()))?;
 
-    let mut req = st
-        .http
-        .get(format!("{}/search", service_url.trim_end_matches('/')))
-        .query(&[("q", &query.q), ("limit", &query.limit.to_string())]);
+    // A `client` span, which is the outgoing half of this dependency's
+    // service-graph edge and what gives Tempo a per-dependency error rate and
+    // latency for "is yt-dlp-ingest healthy?". The route is the template, not
+    // the query — `q` is user text and would be unbounded cardinality.
+    let span = bvault_telemetry::client_span("GET", "yt-dlp-ingest", "/search");
 
-    if let Some(key) = &st.config.internal_api_key {
-        req = req.header("X-Internal-Key", key); // symmetric internal auth
-    }
-    // Hand the trace down to yt-dlp-ingest. Internal hops only — third-party
-    // calls (Drive, YouTube) deliberately get no trace headers.
-    if let Some(traceparent) = bvault_telemetry::current_traceparent() {
-        req = req.header(bvault_telemetry::TRACEPARENT, traceparent);
-    }
+    let sent = async {
+        let mut req = st
+            .http
+            .get(format!("{}/search", service_url.trim_end_matches('/')))
+            .query(&[("q", &query.q), ("limit", &query.limit.to_string())]);
 
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| GatewayError::Internal(format!("yt-dlp search error: {e}")))?;
+        if let Some(key) = &st.config.internal_api_key {
+            req = req.header("X-Internal-Key", key); // symmetric internal auth
+        }
+        // Injected from inside the client span so the callee's server span
+        // becomes its child — that parent-child link is what Tempo pairs on.
+        // Internal hops only; third-party calls (Drive, YouTube) get no trace
+        // headers.
+        if let Some(traceparent) = bvault_telemetry::current_traceparent() {
+            req = req.header(bvault_telemetry::TRACEPARENT, traceparent);
+        }
+        req.send().await
+    }
+    .instrument(span.clone())
+    .await;
+
+    let resp = match sent {
+        Ok(resp) => {
+            bvault_telemetry::record_client_outcome(&span, Some(resp.status().as_u16()));
+            resp
+        }
+        Err(e) => {
+            // Never reached the service at all — no status to record.
+            bvault_telemetry::record_client_outcome(&span, None);
+            return Err(GatewayError::Internal(format!("yt-dlp search error: {e}")));
+        }
+    };
     if !resp.status().is_success() {
         return Err(GatewayError::Internal(
             "yt-dlp search request failed".into(),

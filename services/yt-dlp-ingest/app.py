@@ -14,6 +14,16 @@ import yt_dlp
 from yt_dlp.networking.impersonate import ImpersonateTarget
 from anyio import to_thread
 
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace import SpanKind, Status, StatusCode
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+
 # Logs go to stdout, where the Alloy DaemonSet tails the pod log and ships it to
 # Loki. Two things are needed for that to be worth anything in a container:
 #
@@ -91,7 +101,54 @@ class _YtDlpLogger:
 
 _YTDLP_LOGGER = _YtDlpLogger()
 
+
+def _init_tracing() -> bool:
+    """Export spans to Tempo over OTLP/HTTP, or do nothing at all.
+
+    Deliberately the same contract as the Rust services: with no
+    OTEL_EXPORTER_OTLP_ENDPOINT in the environment no SDK is installed, so local
+    runs behave exactly as before, and a collector that is misconfigured or down
+    costs a warning rather than the ingestion pipeline.
+
+    Endpoint, headers and resource attributes are read from the standard OTEL_*
+    environment by the SDK itself, so the generic endpoint variable gets
+    /v1/traces appended exactly as it does on the Rust side.
+    """
+    if os.getenv("OTEL_SDK_DISABLED", "false").lower() == "true":
+        return False
+    if not (
+        os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+    ):
+        return False
+
+    try:
+        service = os.getenv("OTEL_SERVICE_NAME") or "bvault-yt-dlp-ingest"
+        provider = TracerProvider(resource=Resource.create({SERVICE_NAME: service}))
+        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+        trace.set_tracer_provider(provider)
+        log.info("otlp trace export enabled (service=%s)", service)
+        return True
+    except Exception:
+        log.exception("otlp trace export unavailable; continuing without traces")
+        return False
+
+
+TRACING_ENABLED = _init_tracing()
+# Safe either way: with no provider installed this hands back a no-op tracer, so
+# the instrumentation below and the job spans need no enabled/disabled branches.
+tracer = trace.get_tracer("bvault-yt-dlp-ingest")
+
 app = FastAPI(title="BeatVault yt-dlp Ingestion Service")
+
+if TRACING_ENABLED:
+    # Server spans. /health is excluded for the same reason it is filtered out
+    # of the logs: the readiness probe every 10s is noise, not traffic.
+    FastAPIInstrumentor.instrument_app(app, excluded_urls="health")
+    # Client spans for every httpx call back to the gateway — claim, report,
+    # cookie sync, upload. Each one pairs with the gateway's server span to draw
+    # a yt-dlp-ingest → gateway edge in the service graph.
+    HTTPXClientInstrumentor().instrument()
 
 @app.on_event("startup")
 async def startup_event():
@@ -132,34 +189,62 @@ async def claim_worker_loop():
         user_id = job["payload"]["user_id"]
         job_id = job["id"]
 
-        try:
-            for attempt in range(MAX_RETRIES + 1):
-                # The thread limiter ensures only 2 of these actually run concurrently
-                success, permanent, err_str = await to_thread.run_sync(process_yt_dlp_once, url, user_id, job_id, GATEWAY_URL)
-            
-                if success:
-                    _report_job(job_id, user_id, GATEWAY_URL, ok=True)
-                    return
-            
-                if permanent:
-                    _report_job(job_id, user_id, GATEWAY_URL, ok=False, error=err_str)
-                    return
+        # Join the trace of whoever asked for this ingest. The gateway stored its
+        # traceparent on the job row and hands it back on claim; adopting it as a
+        # remote parent makes this span the *consumer* half of the queue's
+        # service-graph edge, rather than a trace that appears from nowhere
+        # minutes after the request that caused it returned.
+        traceparent = job.get("traceparent")
+        parent = (
+            TraceContextTextMapPropagator().extract({"traceparent": traceparent})
+            if traceparent
+            else None
+        )
 
-                if attempt < MAX_RETRIES:
-                    sleep_time = random.uniform(0, min(120.0, BASE_BACKOFF_SECONDS * (2 ** attempt)))
-                    log.warning(
-                        "job %s failed on attempt %d/%d: %s — retrying in %.2fs",
-                        job_id, attempt + 1, MAX_RETRIES + 1, err_str, sleep_time,
-                    )
-                    await asyncio.sleep(sleep_time)
-            
-            log.error(
-                "job %s permanently failed after %d attempts: %s",
-                job_id, MAX_RETRIES + 1, err_str,
-            )
-            _report_job(job_id, user_id, GATEWAY_URL, ok=False, error=err_str)
-        finally:
-            semaphore.release()
+        with tracer.start_as_current_span(
+            "ytdlp-ingest-job",
+            context=parent,
+            # Must mirror the producer side in the gateway's Queue::enqueue, or
+            # Tempo has nothing to pair this with.
+            kind=SpanKind.CONSUMER,
+            attributes={
+                "messaging.system": "postgresql",
+                "messaging.operation.name": "process",
+                "messaging.destination.name": "yt_dlp_ingest",
+                "job.id": job_id,
+            },
+        ) as span:
+            try:
+                for attempt in range(MAX_RETRIES + 1):
+                    span.set_attribute("job.attempt", attempt + 1)
+                    # The thread limiter ensures only 2 of these actually run concurrently
+                    success, permanent, err_str = await to_thread.run_sync(process_yt_dlp_once, url, user_id, job_id, GATEWAY_URL)
+
+                    if success:
+                        _report_job(job_id, user_id, GATEWAY_URL, ok=True)
+                        return
+
+                    if permanent:
+                        span.set_status(Status(StatusCode.ERROR, err_str))
+                        _report_job(job_id, user_id, GATEWAY_URL, ok=False, error=err_str)
+                        return
+
+                    if attempt < MAX_RETRIES:
+                        sleep_time = random.uniform(0, min(120.0, BASE_BACKOFF_SECONDS * (2 ** attempt)))
+                        log.warning(
+                            "job %s failed on attempt %d/%d: %s — retrying in %.2fs",
+                            job_id, attempt + 1, MAX_RETRIES + 1, err_str, sleep_time,
+                        )
+                        await asyncio.sleep(sleep_time)
+
+                span.set_status(Status(StatusCode.ERROR, err_str))
+                log.error(
+                    "job %s permanently failed after %d attempts: %s",
+                    job_id, MAX_RETRIES + 1, err_str,
+                )
+                _report_job(job_id, user_id, GATEWAY_URL, ok=False, error=err_str)
+            finally:
+                semaphore.release()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         while True:

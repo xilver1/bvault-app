@@ -18,6 +18,18 @@ pub enum JobKind {
     YtDlpIngest,
 }
 
+impl JobKind {
+    /// Stable, low-cardinality name for this kind — the Postgres enum label.
+    /// Used as the messaging destination on producer/consumer spans, where it
+    /// becomes a service-graph label.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            JobKind::Analysis => "analysis",
+            JobKind::YtDlpIngest => "yt_dlp_ingest",
+        }
+    }
+}
+
 /// Payload for a [`JobKind::YtDlpIngest`] job. `user_id` is carried here rather
 /// than as a column so ownership checks work without a jobs-table schema change
 /// while user-scoping lands in Step 1b.

@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use sqlx::postgres::{PgPool, PgPoolOptions};
+use tracing::Instrument;
 
 use crate::model::{Job, JobKind, JobStatus};
 use crate::Result;
@@ -86,6 +87,13 @@ impl Queue {
     /// it. On conflict the *original* traceparent is kept — the work belongs to
     /// the trace that first asked for it, and it will only ever run once.
     ///
+    /// The enqueue runs inside a `producer` span, which is the outgoing half of
+    /// the queue's service-graph edge: Tempo pairs it with the worker's
+    /// `consumer` span to draw gateway → analysis-worker and to measure how
+    /// long work sits between the two. The pairing is by parent-child, so the
+    /// `traceparent` written to the row is captured *inside* that span — it has
+    /// to be the consumer's parent, not the request span above it.
+    ///
     /// Returns the job id (new or existing).
     pub async fn enqueue<T: Serialize>(
         &self,
@@ -95,25 +103,32 @@ impl Queue {
         max_attempts: i32,
     ) -> Result<i64> {
         let payload = serde_json::to_value(payload)?;
-        // The no-op UPDATE on conflict lets RETURNING give us the existing id
-        // whether we inserted a new row or collided with an active one.
-        let (id,): (i64,) = sqlx::query_as(
-            r#"
-            insert into jobs (kind, dedup_key, payload, max_attempts, traceparent)
-            values ($1, $2, $3, $4, $5)
-            on conflict (kind, dedup_key) where status in ('pending', 'running')
-            do update set updated_at = now()
-            returning id
-            "#,
-        )
-        .bind(kind)
-        .bind(dedup_key)
-        .bind(payload)
-        .bind(max_attempts)
-        .bind(bvault_telemetry::current_traceparent())
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(id)
+        // The jobs table is the broker, so `postgresql` is the messaging system.
+        let span = bvault_telemetry::producer_span("postgresql", kind.as_str());
+
+        async move {
+            // The no-op UPDATE on conflict lets RETURNING give us the existing id
+            // whether we inserted a new row or collided with an active one.
+            let (id,): (i64,) = sqlx::query_as(
+                r#"
+                insert into jobs (kind, dedup_key, payload, max_attempts, traceparent)
+                values ($1, $2, $3, $4, $5)
+                on conflict (kind, dedup_key) where status in ('pending', 'running')
+                do update set updated_at = now()
+                returning id
+                "#,
+            )
+            .bind(kind)
+            .bind(dedup_key)
+            .bind(payload)
+            .bind(max_attempts)
+            .bind(bvault_telemetry::current_traceparent())
+            .fetch_one(&self.pool)
+            .await?;
+            Ok(id)
+        }
+        .instrument(span)
+        .await
     }
 
     /// Atomically claim the oldest runnable job of `kind`, leasing it for

@@ -5,3 +5,12 @@ curl_cffi>=0.10,<0.16
 httpx==0.27.0
 pydantic==2.7.3
 bgutil-ytdlp-pot-provider
+
+# Tracing: spans over OTLP/HTTP to Tempo, matching the Rust services.
+# The SDK/API line (1.x) and the instrumentation line (0.x) version separately
+# but are released in lockstep - bump them together.
+opentelemetry-api==1.44.0
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-instrumentation-fastapi==0.65b0
+opentelemetry-instrumentation-httpx==0.65b0
