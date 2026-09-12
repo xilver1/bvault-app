@@ -537,6 +537,7 @@ async fn google_oauth_flow(scope_url: &str) -> Result<String> {
     let (authorize_url, _csrf_state) = client
         .authorize_url(CsrfToken::new_random)
         .add_scope(Scope::new(scope_url.to_string()))
+        .add_extra_param("prompt", "consent select_account")
         .url();
 
     println!("Opening your browser to authenticate...");

@@ -9,6 +9,9 @@ on:
       - "crates/bvault-core/**"
       - "crates/bvault-meta/**"
       - "crates/bvault-store/**"
+      - "crates/bvault-auth/**"
+      - "crates/bvault-manifest/**"
+      - "crates/bvault-telemetry/**"
       - "Cargo.toml"
       - "Cargo.lock"
 

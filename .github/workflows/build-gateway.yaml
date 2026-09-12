@@ -10,6 +10,7 @@ on:
       - "crates/bvault-store/**"
       - "crates/bvault-auth/**"
       - "crates/bvault-hash/**"
+      - "crates/bvault-telemetry/**"
       - "Cargo.toml"
       - "Cargo.lock"
 

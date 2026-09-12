@@ -9,6 +9,8 @@ on:
       - "crates/bvault-core/**"
       - "crates/bvault-jobs/**"
       - "crates/bvault-store/**"
+      - "crates/bvault-hash/**"
+      - "crates/bvault-telemetry/**"
       - "Cargo.toml"
       - "Cargo.lock"
 
