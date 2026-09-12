@@ -81,6 +81,7 @@ graph TB
 | `bvault-manifest` | Pure `serde` data contract describing a USB export |
 | `bvault-transfer` | Unified writer over standard filesystems and Android SAF |
 | `bvault-cli` | The `bvault` command-line client |
+| `bvault-telemetry` | Logging + OpenTelemetry span export (OTLP/HTTP → Tempo) and W3C trace propagation |
 
 ### Services
 
@@ -138,6 +139,80 @@ Add five tracks to a thousand-track playlist and only those five are transferred
 - Cookies encrypted with **AES-256-GCM**.
 - **Multi-tenancy is enforced in the data layer** — every query is scoped by `user_id`, not
   filtered in application code after the fact.
+
+---
+
+## Observability
+
+Metrics and logs already leave the cluster for the observability host — a Prometheus
+agent remote-writes, and a Grafana Alloy DaemonSet pushes pod logs to Loki. The third leg
+is **distributed tracing**: every Rust service exports OpenTelemetry spans over **OTLP/HTTP
+(protobuf, port 4318)** to **Grafana Tempo**, which sits beside Prometheus and Loki as
+another datasource in the same Grafana.
+
+Tracing is **opt-in and never fatal.** With no endpoint in the environment the services
+install exactly the `fmt` subscriber they always had — no exporter, no background thread.
+A misconfigured or unreachable collector logs a warning and the service keeps serving;
+observability is never allowed to take the pipeline down.
+
+### Turning it on
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://<observability-host>:4318
+```
+
+That single variable is enough. The rest are standard OTel knobs, not bvault inventions:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | *(unset — tracing off)* | Collector base URL; `/v1/traces` is appended |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | *(unset)* | Full traces URL, used verbatim; wins over the above |
+| `OTEL_SERVICE_NAME` | per-binary (`bvault-gateway`, …) | Identity in Tempo's service list |
+| `OTEL_RESOURCE_ATTRIBUTES` | *(unset)* | Extra resource attributes, e.g. `deployment.environment=prod` |
+| `OTEL_TRACES_SAMPLER` | `parentbased_always_on` | Also `always_on`/`always_off`/`traceidratio`/`parentbased_traceidratio` |
+| `OTEL_TRACES_SAMPLER_ARG` | `1.0` | Ratio for the ratio-based samplers |
+| `OTEL_TRACES_FILTER` | `info,sqlx=warn,…` | Span capture level — deliberately **not** `RUST_LOG` |
+| `OTEL_SDK_DISABLED` | `false` | Kill switch that leaves the endpoint configured |
+
+`OTEL_TRACES_FILTER` being separate from `RUST_LOG` is the one intentional deviation:
+export must not hinge on a log level, or quieting the logs would silently blind Tempo.
+
+The exporter is built without a TLS backend, since the collector is reached over the
+lab network the same way Prometheus remote-write and Loki push already are. A `https://`
+endpoint would need a TLS feature enabled on `bvault-telemetry`'s `reqwest`.
+
+### What a trace looks like
+
+Spans survive both hops between services, so one trace covers a whole request — including
+work that happens minutes later in another pod:
+
+```mermaid
+sequenceDiagram
+    participant C as CLI / phone
+    participant GW as gateway
+    participant DB as jobs table
+    participant AW as analysis-worker
+
+    C->>GW: POST /analyze  (traceparent header)
+    Note over GW: span: POST /analyze
+    GW->>DB: enqueue job + traceparent column
+    GW-->>C: 200 {batch_id}
+    Note over GW,AW: same trace, minutes later
+    AW->>DB: claim job (reads traceparent)
+    Note over AW: span: analysis-job → analyze-track
+```
+
+HTTP hops carry the W3C `traceparent` header. The **queue** hop can't — the worker claims
+the row long after the request returned — so the submitting request's `traceparent` is
+stored on the job row (migration `0010`) and re-adopted as the remote parent when a worker
+claims it. Without that column, "user pressed Analyze" and "this track finished analysing"
+would be two unrelated traces.
+
+Trace headers are injected into **internal** calls only. Requests to Google Drive and
+YouTube deliberately get none — internal topology isn't third parties' business.
+
+Server spans are named by axum's *matched route* (`GET /playlists/{id}`), never the
+concrete URI, so a playlist id can't explode into one Tempo series per track.
 
 ---
 

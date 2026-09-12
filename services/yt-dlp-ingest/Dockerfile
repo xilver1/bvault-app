@@ -15,6 +15,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \
     && rm -rf /var/lib/apt/lists/*
 
+# Python block-buffers stdout when it isn't a TTY, which in a pod means logs
+# arrive late and a crash loses the last ones entirely — the ones that explain
+# the crash. Alloy ships whatever reaches the pod log, so flush straight there.
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 COPY services/yt-dlp-ingest/requirements.txt .

@@ -1,4 +1,6 @@
 import os
+import logging
+import sys
 import tempfile
 import time
 import random
@@ -12,6 +14,83 @@ import yt_dlp
 from yt_dlp.networking.impersonate import ImpersonateTarget
 from anyio import to_thread
 
+# Logs go to stdout, where the Alloy DaemonSet tails the pod log and ships it to
+# Loki. Two things are needed for that to be worth anything in a container:
+#
+#   * A real level on every line. Bare `print` carries none, so LogQL can't
+#     filter this service by severity the way it can the Rust ones.
+#   * Unbuffered output. Python block-buffers stdout when it isn't a TTY, so a
+#     crash otherwise takes the last few KB of logs with it — precisely the
+#     lines worth reading. `PYTHONUNBUFFERED=1` is set in the Dockerfile.
+#
+# uvicorn configures its own loggers and leaves the root logger alone, so this
+# stands regardless of import order; its startup/access lines keep uvicorn's
+# format and still reach Loki.
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S%z",
+    stream=sys.stdout,
+)
+log = logging.getLogger("yt-dlp-ingest")
+
+
+class _DropHealthyProbes(logging.Filter):
+    """Keep the kubelet readiness probe out of Loki.
+
+    It hits /health every 10s — ~8.6k lines a day that say nothing. Only
+    successful probes are dropped; a failing one is exactly what you'd want to
+    see, so anything >=400 still gets through.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # uvicorn logs access lines as
+        # ("%s - \"%s %s HTTP/%s\" %d", client, method, path, version, status)
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 5:
+            path, status = args[2], args[4]
+            return not (path == "/health" and isinstance(status, int) and status < 400)
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_DropHealthyProbes())
+
+
+# yt-dlp writes to stdout itself unless handed a logger. Raw prints reach the
+# pod log, so Alloy ships them either way — but they arrive as levelless text
+# that can't be filtered or separated from the service's own lines. Routing
+# them through `logging` puts a level on each one and files them under their
+# own logger name, so LogQL can isolate extractor chatter from ingest events.
+_ytdlp_log = log.getChild("yt-dlp")
+
+
+class _YtDlpLogger:
+    """Adapts yt-dlp's logger protocol onto the stdlib logger.
+
+    For youtube-dl compatibility yt-dlp funnels *both* debug and info through
+    `debug()`, distinguishing them only by a "[debug] " prefix. Splitting them
+    back into real levels has to happen here — otherwise every extractor
+    internal lands in Loki at INFO, which is the noise this replaced.
+    """
+
+    def debug(self, msg: str) -> None:
+        if msg.startswith("[debug] "):
+            _ytdlp_log.debug("%s", msg[len("[debug] "):])
+        else:
+            _ytdlp_log.info("%s", msg)
+
+    def info(self, msg: str) -> None:
+        _ytdlp_log.info("%s", msg)
+
+    def warning(self, msg: str) -> None:
+        _ytdlp_log.warning("%s", msg)
+
+    def error(self, msg: str) -> None:
+        _ytdlp_log.error("%s", msg)
+
+
+_YTDLP_LOGGER = _YtDlpLogger()
+
 app = FastAPI(title="BeatVault yt-dlp Ingestion Service")
 
 @app.on_event("startup")
@@ -24,10 +103,10 @@ async def startup_event():
     # Without this, multiple threads calling yt_dlp.YoutubeDL() concurrently will crash
     # with "AssertionError: PoTokenProvider already registered".
     try:
-        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True, 'logger': _YTDLP_LOGGER}) as ydl:
             pass
-    except Exception as e:
-        print(f"[startup] yt-dlp pre-init failed: {e}")
+    except Exception:
+        log.exception("yt-dlp pre-init failed")
 
     # Start a single claim loop that manages concurrency internally
     asyncio.create_task(claim_worker_loop())
@@ -39,7 +118,7 @@ MAX_RETRIES = int(os.getenv("MAX_RETRIES", "10"))
 BASE_BACKOFF_SECONDS = float(os.getenv("BASE_BACKOFF_SECONDS", "10.0"))
 
 async def claim_worker_loop():
-    print("[yt-dlp-ingest] worker loop started", flush=True)
+    log.info("worker loop started")
     claim_url = f"{GATEWAY_URL.rstrip('/')}/internal/jobs/claim"
     headers = {}
     if INTERNAL_API_KEY:
@@ -68,10 +147,16 @@ async def claim_worker_loop():
 
                 if attempt < MAX_RETRIES:
                     sleep_time = random.uniform(0, min(120.0, BASE_BACKOFF_SECONDS * (2 ** attempt)))
-                    print(f"[yt-dlp-ingest] job {job_id} failed on attempt {attempt + 1}/{MAX_RETRIES + 1}: {err_str}. Retrying in {sleep_time:.2f}s...", flush=True)
+                    log.warning(
+                        "job %s failed on attempt %d/%d: %s — retrying in %.2fs",
+                        job_id, attempt + 1, MAX_RETRIES + 1, err_str, sleep_time,
+                    )
                     await asyncio.sleep(sleep_time)
             
-            print(f"[yt-dlp-ingest] job {job_id} permanently failed after {MAX_RETRIES + 1} attempts: {err_str}", flush=True)
+            log.error(
+                "job %s permanently failed after %d attempts: %s",
+                job_id, MAX_RETRIES + 1, err_str,
+            )
             _report_job(job_id, user_id, GATEWAY_URL, ok=False, error=err_str)
         finally:
             semaphore.release()
@@ -93,11 +178,11 @@ async def claim_worker_loop():
                 asyncio.create_task(handle_job(job))
                 
             except httpx.HTTPError as e:
-                print(f"[yt-dlp-ingest] http error claiming job: {e}", flush=True)
+                log.warning("http error claiming job: %s", e)
                 semaphore.release()
                 await asyncio.sleep(5)
-            except Exception as e:
-                print(f"[yt-dlp-ingest] unexpected error in worker loop: {e}", flush=True)
+            except Exception:
+                log.exception("unexpected error in worker loop")
                 semaphore.release()
                 await asyncio.sleep(5)
 
@@ -110,8 +195,8 @@ def _report_job(job_id: int, user_id: str, gateway_url: str, ok: bool, error: Op
         if INTERNAL_API_KEY:
             headers["X-Internal-Key"] = INTERNAL_API_KEY
         httpx.post(url, json={"ok": ok, "error": error}, headers=headers, timeout=30.0)
-    except Exception as e:
-        print(f"[yt-dlp-ingest] failed to report job {job_id}: {e}", flush=True)
+    except Exception:
+        log.exception("failed to report job %s", job_id)
 
 
 def process_yt_dlp_once(url: str, user_id: str, job_id: int, target_gateway_url: str):
@@ -139,9 +224,9 @@ def process_yt_dlp_once(url: str, user_id: str, job_id: int, target_gateway_url:
                 if cookies_txt:
                     with open(cookie_file, "w") as f:
                         f.write(cookies_txt)
-                    print(f"[yt-dlp-ingest] Loaded cookies for user {user_id}", flush=True)
+                    log.info("loaded cookies for user %s", user_id)
         except Exception as e:
-            print(f"[yt-dlp-ingest] Failed to fetch cookies: {e}", flush=True)
+            log.warning("failed to fetch cookies: %s", e)
 
         ydl_opts = {
             'force_ipv4': True,
@@ -154,9 +239,17 @@ def process_yt_dlp_once(url: str, user_id: str, job_id: int, target_gateway_url:
                 'preferredcodec': 'mp3',
                 'preferredquality': '320',
             }],
+            # `quiet`/`no_warnings` stay off so extraction and destination
+            # lines still reach the logger; `verbose` is not set, since its
+            # [debug] firehose was the bulk of this pod's log volume (it is
+            # still reachable per-pod with LOG_LEVEL=DEBUG).
             'quiet': False,
             'no_warnings': False,
-            'verbose': True,
+            'logger': _YTDLP_LOGGER,
+            # Progress ticks are redrawn continuously; through a logger each
+            # redraw becomes its own line, so a single download would be
+            # thousands of them.
+            'noprogress': True,
             'impersonate': ImpersonateTarget.from_str('chrome'),
                 # Fetch a GVS PO token from the bgutil sidecar so YouTube authorizes
                 # the media download (this is the fix for the 403). base_url matches
@@ -189,12 +282,12 @@ def process_yt_dlp_once(url: str, user_id: str, job_id: int, target_gateway_url:
                         headers["X-Internal-Key"] = INTERNAL_API_KEY
 
                     upload_url = f"{target_gateway_url.rstrip('/')}/ingest/upload"
-                    print(f"[yt-dlp-ingest] Uploading '{title}' to gateway...", flush=True)
+                    log.info("uploading %r to gateway", title)
                     res = httpx.post(upload_url, files=files, headers=headers, timeout=60.0)
                     if res.status_code >= 400:
-                        print(f"[yt-dlp-ingest] upload rejected {res.status_code}: {res.text}", flush=True)
+                        log.error("upload rejected %s: %s", res.status_code, res.text)
                     res.raise_for_status()
-                    print(f"[yt-dlp-ingest] Ingested '{title}' status: {res.status_code}", flush=True)
+                    log.info("ingested %r, gateway returned %s", title, res.status_code)
             finally:
                 if os.path.exists(mp3_filename):
                     os.remove(mp3_filename)
@@ -205,9 +298,9 @@ def process_yt_dlp_once(url: str, user_id: str, job_id: int, target_gateway_url:
                 with open(cookie_file, "r") as f:
                     new_cookies = f.read()
                 httpx.post(f"{target_gateway_url.rstrip('/')}/auth/youtube/cookies", json={"cookies_txt": new_cookies}, headers=headers, timeout=10.0)
-                print(f"[yt-dlp-ingest] Updated cookies for user {user_id}", flush=True)
+                log.info("updated cookies for user %s", user_id)
             except Exception as e:
-                print(f"[yt-dlp-ingest] Failed to update cookies: {e}", flush=True)
+                log.warning("failed to update cookies: %s", e)
 
         return (True, False, "")
 
@@ -235,7 +328,7 @@ def search_yt_dlp(q: str, limit: int = 10, x_internal_key: Optional[str] = Heade
     if INTERNAL_API_KEY and x_internal_key != INTERNAL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid internal key")
 
-    ydl_opts = {"extract_flat": True, "quiet": True, "no_warnings": True}
+    ydl_opts = {"extract_flat": True, "quiet": True, "no_warnings": True, "logger": _YTDLP_LOGGER}
     results = []
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
@@ -253,7 +346,7 @@ def search_yt_dlp(q: str, limit: int = 10, x_internal_key: Optional[str] = Heade
                     "thumbnail": entry.get("thumbnail"),
                     "video_id": vid or "",
                 })
-        except Exception as e:
-            print(f"[yt-dlp-ingest] search error: {e}")
+        except Exception:
+            log.exception("search error")
             raise HTTPException(status_code=500, detail="Search failed")
     return results
