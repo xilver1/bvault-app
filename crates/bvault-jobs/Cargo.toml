@@ -4,6 +4,11 @@ version.workspace = true
 edition = "2021"
 
 [dependencies]
+# Trace context rides on the job row (see the `traceparent` column). This is
+# propagation only: the crate reads the ambient context, it never initializes
+# telemetry — that stays the binaries' job.
+bvault-telemetry = { path = "../bvault-telemetry" }
+
 # In-cluster Postgres, so no TLS backend is pulled in. If you ever point this at
 # a TLS-only Postgres, add one of sqlx's `tls-rustls-ring` / `tls-native-tls`
 # features. Runtime queries (no `query!`) mean `cargo check` needs no live DB.

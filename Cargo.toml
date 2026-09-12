@@ -12,6 +12,7 @@ members = [
     "crates/bvault-export",
     "crates/bvault-manifest",
     "crates/bvault-transfer",
+    "crates/bvault-telemetry",
     "crates/bvault-cli",
     "services/analysis-worker",
     "services/export-builder",

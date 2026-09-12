@@ -1,0 +1,36 @@
+[package]
+name = "bvault-telemetry"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = "0.33"
+
+# API only (no SDK): types, the global propagator/tracer registry.
+opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
+# `trace` only — this workspace ships no OTLP metrics or logs; Prometheus and
+# Loki already own those two legs.
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace"] }
+# OTLP over HTTP/protobuf (port 4318), not gRPC: it exports through reqwest,
+# which the gateway already links, and keeps tonic + its hyper stack out of
+# every image. `reqwest-blocking-client` is deliberate — the SDK's batch span
+# processor owns a plain OS thread, so a blocking client needs no reactor and
+# the services keep their single-threaded tokio runtimes.
+opentelemetry-otlp = { version = "0.32", default-features = false, features = [
+    "trace", "http-proto", "reqwest-blocking-client",
+] }
+# W3C `traceparent` carriers. Shared `http` types with axum/reqwest (both 1.x).
+opentelemetry-http = { version = "0.32", default-features = false }
+http = "1"
+
+# Server-span middleware. Optional: the analysis worker has no HTTP surface.
+axum = { version = "0.8", optional = true }
+tower-http = { version = "0.6", features = ["trace"], optional = true }
+
+[features]
+default = []
+# Enables `bvault_telemetry::http` — tower-http `MakeSpan`/`OnResponse` impls
+# for axum services.
+http-server = ["dep:axum", "dep:tower-http"]

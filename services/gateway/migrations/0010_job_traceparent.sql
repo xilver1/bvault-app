@@ -1,0 +1,13 @@
+-- Carry the submitting request's W3C trace context on the job row, so a trace
+-- survives the queue hop.
+--
+-- Without this, "user pressed Analyze" and "this track finished analysing" are
+-- two unrelated traces in Tempo: the worker claims the row minutes later, in
+-- another pod, with no in-band link back to whoever asked for the work. The
+-- `traceparent` is the whole link — 55 bytes of trace id + span id + flags.
+--
+-- Nullable and never read for correctness: rows enqueued before this column
+-- existed, or enqueued while tracing was switched off, simply start their own
+-- trace at the worker. Adding a nullable column with no default is a catalog-
+-- only change in Postgres, so this is safe to apply to a live jobs table.
+alter table jobs add column traceparent text;

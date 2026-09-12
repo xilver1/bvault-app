@@ -11,6 +11,9 @@ path = "src/main.rs"
 bvault-jobs = { path = "../../crates/bvault-jobs" }
 bvault-store = { path = "../../crates/bvault-store" }
 bvault-analysis = { path = "../../crates/bvault-analysis" }
+# Logging + OTLP span export. No `http-server` feature: this worker has no
+# HTTP surface, so it needs no server-span middleware.
+bvault-telemetry = { path = "../../crates/bvault-telemetry" }
 # Note: no direct bvault-core dep — TrackAnalysis comes back from
 # analyze_source and its Serialize impl is used transitively; nothing here names
 # a core type. And no SQLCipher/OpenSSL, since -analysis pulls -core with the
@@ -19,5 +22,4 @@ bvault-analysis = { path = "../../crates/bvault-analysis" }
 tokio = { workspace = true, features = ["time"] } # + timers; workspace has rt/macros
 serde_json = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }

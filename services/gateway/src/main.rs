@@ -25,9 +25,10 @@ use crate::state::AppState;
 // It keeps the pod's memory footprint minimal, in keeping with the whole design.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    // Held to the end of `main`: dropping it flushes any spans the batch
+    // exporter is still sitting on, so a shutdown doesn't swallow the last few
+    // seconds of traces.
+    let _telemetry = bvault_telemetry::init("bvault-gateway");
 
     let config = Config::from_env().context("loading config from environment")?;
 

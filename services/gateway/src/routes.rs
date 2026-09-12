@@ -8,6 +8,7 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio_util::io::ReaderStream;
+use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
 use bvault_jobs::{AnalysisJob, Job, JobKind, JobStatus, YtDlpIngestJob};
@@ -56,6 +57,15 @@ pub fn build_router(state: AppState) -> Router {
         .route("/jobs/{id}", get(get_job))
         .route("/internal/jobs/{id}", post(report_job))
         .route("/internal/jobs/claim", post(claim_job))
+        // Outermost: one server span per request, adopting the caller's
+        // `traceparent` when there is one. Sitting outside the router is what
+        // makes axum's matched route available, so spans are named
+        // `GET /playlists/{id}` rather than one name per playlist id.
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(bvault_telemetry::http::OtelMakeSpan)
+                .on_response(bvault_telemetry::http::OtelOnResponse),
+        )
         .with_state(state)
 }
 
@@ -1074,6 +1084,11 @@ async fn search_ytdlp(
 
     if let Some(key) = &st.config.internal_api_key {
         req = req.header("X-Internal-Key", key); // symmetric internal auth
+    }
+    // Hand the trace down to yt-dlp-ingest. Internal hops only — third-party
+    // calls (Drive, YouTube) deliberately get no trace headers.
+    if let Some(traceparent) = bvault_telemetry::current_traceparent() {
+        req = req.header(bvault_telemetry::TRACEPARENT, traceparent);
     }
 
     let resp = req

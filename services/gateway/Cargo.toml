@@ -13,11 +13,16 @@ bvault-meta = { path = "../../crates/bvault-meta" }
 bvault-store = { path = "../../crates/bvault-store" }
 bvault-auth = { path = "../../crates/bvault-auth" }
 bvault-hash = { path = "../../crates/bvault-hash" }
+# Logging + OTLP span export. `http-server` pulls in the tower-http span
+# middleware; without it this crate is exporter-only.
+bvault-telemetry = { path = "../../crates/bvault-telemetry", features = ["http-server"] }
 
 axum = { version = "0.8", features = ["multipart"] }
 # Current-thread runtime (see main.rs). Workspace tokio already has rt/net/macros.
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["io"] }
+# One server span per request, named by matched route.
+tower-http = { version = "0.6", features = ["trace"] }
 # The gateway owns migrations, hence `migrate`. Row-type features (chrono/uuid/
 # json/macros) come transitively from jobs/meta via Cargo feature unification.
 sqlx = { version = "0.8", default-features = false, features = [
@@ -29,7 +34,6 @@ chrono = { version = "0.4", features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { workspace = true }
 bytes = "1.5"

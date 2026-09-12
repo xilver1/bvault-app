@@ -23,9 +23,9 @@ use crate::state::AppState;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    // Held for the life of the process so the batch exporter is flushed on the
+    // way out instead of dropping the last spans.
+    let _telemetry = bvault_telemetry::init("bvault-export-builder");
 
     let config = Config::from_env().context("loading config from environment")?;
     tokio::fs::create_dir_all(&config.staging_root)

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tracing::{error, info};
+use tracing::{error, field::Empty, info, Instrument, Span};
 
 use bvault_analysis::AnalyzeOptions;
 use bvault_jobs::{AnalysisJob, Job, JobKind, Queue};
@@ -47,37 +47,69 @@ impl Worker {
     }
 
     /// Drive one job to a terminal state.
+    ///
+    /// The whole job runs inside one span, re-parented onto the `traceparent`
+    /// the gateway stored on the row. That is what closes the loop in Tempo:
+    /// the "analyze these playlists" request and the analysis that happens
+    /// minutes later in a different pod are one trace, not two. A row with no
+    /// traceparent (enqueued before this shipped, or with tracing off) just
+    /// starts its own.
     async fn process(self: Arc<Self>, job: Job) {
-        let job_id = job.id;
-        let payload: AnalysisJob = match job.payload_as() {
-            Ok(p) => p,
-            Err(e) => {
-                // A malformed payload can never succeed; fail it (it dead-letters
-                // after max_attempts) rather than spin.
-                let _ = self.queue.fail(job_id, &format!("bad payload: {e}")).await;
-                return;
-            }
-        };
+        let span = tracing::info_span!(
+            "analysis-job",
+            otel.kind = "consumer",
+            otel.status_code = Empty,
+            job.id = job.id,
+            job.attempt = job.attempts,
+            track.hash = %job.dedup_key,
+        );
+        bvault_telemetry::set_parent(&span, job.traceparent.as_deref());
 
-        let hash = payload.hash.clone();
-        let worker = self.clone();
-        // CPU-bound + blocking I/O → off the async runtime.
-        let outcome = tokio::task::spawn_blocking(move || worker.analyze(&payload)).await;
+        async move {
+            let job_id = job.id;
+            let payload: AnalysisJob = match job.payload_as() {
+                Ok(p) => p,
+                Err(e) => {
+                    // A malformed payload can never succeed; fail it (it dead-letters
+                    // after max_attempts) rather than spin.
+                    Span::current().record("otel.status_code", "ERROR");
+                    let _ = self.queue.fail(job_id, &format!("bad payload: {e}")).await;
+                    return;
+                }
+            };
 
-        match outcome {
-            Ok(Ok(())) => {
-                info!(job = job_id, %hash, "analyzed");
-                let _ = self.queue.complete(job_id).await;
-            }
-            Ok(Err(e)) => {
-                error!(job = job_id, %hash, error = %e, "analysis failed");
-                let _ = self.queue.fail(job_id, &e.to_string()).await;
-            }
-            Err(join) => {
-                error!(job = job_id, %hash, error = %join, "analysis task panicked");
-                let _ = self.queue.fail(job_id, &format!("panicked: {join}")).await;
+            let hash = payload.hash.clone();
+            let worker = self.clone();
+            // Created here so it is a child of the job span, then entered on the
+            // blocking thread — otherwise the decode/analyse work, which is
+            // where all the time actually goes, would show up as a gap.
+            let work_span = tracing::info_span!("analyze-track", %hash);
+            // CPU-bound + blocking I/O → off the async runtime.
+            let outcome = tokio::task::spawn_blocking(move || {
+                let _entered = work_span.enter();
+                worker.analyze(&payload)
+            })
+            .await;
+
+            match outcome {
+                Ok(Ok(())) => {
+                    info!(job = job_id, %hash, "analyzed");
+                    let _ = self.queue.complete(job_id).await;
+                }
+                Ok(Err(e)) => {
+                    Span::current().record("otel.status_code", "ERROR");
+                    error!(job = job_id, %hash, error = %e, "analysis failed");
+                    let _ = self.queue.fail(job_id, &e.to_string()).await;
+                }
+                Err(join) => {
+                    Span::current().record("otel.status_code", "ERROR");
+                    error!(job = job_id, %hash, error = %join, "analysis task panicked");
+                    let _ = self.queue.fail(job_id, &format!("panicked: {join}")).await;
+                }
             }
         }
+        .instrument(span)
+        .await
     }
 
     /// The actual work — fully synchronous, runs on a blocking thread.

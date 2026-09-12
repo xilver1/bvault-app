@@ -58,6 +58,11 @@ pub struct Job {
     pub locked_until: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// W3C `traceparent` of the request that enqueued this job, so the worker's
+    /// span can join that trace rather than starting an orphan one. `None` for
+    /// rows enqueued before tracing existed, or with tracing switched off —
+    /// purely an observability link, never load-bearing.
+    pub traceparent: Option<String>,
 }
 
 impl Job {

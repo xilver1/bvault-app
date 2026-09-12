@@ -32,7 +32,7 @@ impl Queue {
         let job = sqlx::query_as::<_, Job>(
             r#"
             select id, kind, dedup_key, payload, status, attempts,
-                   max_attempts, locked_until, last_error, created_at
+                   max_attempts, locked_until, last_error, created_at, traceparent
             from jobs where id = $1
             "#,
         )
@@ -80,6 +80,12 @@ impl Queue {
     /// this `(kind, dedup_key)`, its id is returned and nothing new is created,
     /// so re-submitting the same hash is a no-op rather than a duplicate.
     ///
+    /// The caller's trace context is captured here rather than passed in: every
+    /// enqueue happens inside the request span that caused it, so the ambient
+    /// context is always the right answer and no call site can forget to pass
+    /// it. On conflict the *original* traceparent is kept — the work belongs to
+    /// the trace that first asked for it, and it will only ever run once.
+    ///
     /// Returns the job id (new or existing).
     pub async fn enqueue<T: Serialize>(
         &self,
@@ -93,8 +99,8 @@ impl Queue {
         // whether we inserted a new row or collided with an active one.
         let (id,): (i64,) = sqlx::query_as(
             r#"
-            insert into jobs (kind, dedup_key, payload, max_attempts)
-            values ($1, $2, $3, $4)
+            insert into jobs (kind, dedup_key, payload, max_attempts, traceparent)
+            values ($1, $2, $3, $4, $5)
             on conflict (kind, dedup_key) where status in ('pending', 'running')
             do update set updated_at = now()
             returning id
@@ -104,6 +110,7 @@ impl Queue {
         .bind(dedup_key)
         .bind(payload)
         .bind(max_attempts)
+        .bind(bvault_telemetry::current_traceparent())
         .fetch_one(&self.pool)
         .await?;
         Ok(id)
@@ -131,7 +138,7 @@ impl Queue {
                 limit 1
             )
             returning id, kind, dedup_key, payload, status, attempts,
-                      max_attempts, locked_until, last_error, created_at
+                      max_attempts, locked_until, last_error, created_at, traceparent
             "#,
         )
         .bind(kind)

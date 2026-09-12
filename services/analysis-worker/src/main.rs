@@ -22,9 +22,9 @@ use crate::worker::Worker;
 // + sleep); the heavy analysis runs on the blocking pool. Minimal footprint.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    // Held for the life of the process so the batch exporter gets flushed on
+    // the way out rather than losing the last jobs' spans.
+    let _telemetry = bvault_telemetry::init("bvault-analysis-worker");
 
     let config = Config::from_env().context("loading config from environment")?;
 

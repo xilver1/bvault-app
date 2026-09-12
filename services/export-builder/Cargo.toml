@@ -15,14 +15,17 @@ bvault-store = { path = "../../crates/bvault-store" }
 # so this service authenticates rather than trusting an upstream. Pure crate
 # (argon2/sha2) — no OpenSSL beyond what bvault-export already pulls.
 bvault-auth = { path = "../../crates/bvault-auth" }
+# Logging + OTLP span export, plus the shared tower-http server-span
+# middleware so this service's traces look like the gateway's.
+bvault-telemetry = { path = "../../crates/bvault-telemetry", features = ["http-server"] }
 
 axum = "0.8"
 tokio = { workspace = true, features = ["time"] } # + timers for the sweeper
 tokio-util = { version = "0.7", features = ["io"] } # ReaderStream for file streaming
+tower-http = { version = "0.6", features = ["trace"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }

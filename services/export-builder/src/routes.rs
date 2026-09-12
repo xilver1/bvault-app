@@ -26,6 +26,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio_util::io::ReaderStream;
+use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
 use bvault_export::{build_export, ExportInput, Manifest, PlaylistInput, Source};
@@ -86,6 +87,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/exports/{id}/manifest", get(get_manifest))
         .route("/exports/{id}/files/{*path}", get(serve_file))
         .route("/exports/{id}", delete(delete_export))
+        // Same server-span middleware as the gateway, so both services' traces
+        // share one shape in Tempo. Outside the router, for matched-route names.
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(bvault_telemetry::http::OtelMakeSpan)
+                .on_response(bvault_telemetry::http::OtelOnResponse),
+        )
         .with_state(state)
 }
 
