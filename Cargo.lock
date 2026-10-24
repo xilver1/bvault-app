@@ -355,6 +355,7 @@ name = "bvault-analysis-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "bvault-analysis",
  "bvault-jobs",
  "bvault-store",

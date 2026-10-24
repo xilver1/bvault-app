@@ -20,6 +20,8 @@ use bvault_analysis::AnalyzeOptions;
 use bvault_jobs::{AnalysisJob, Job, JobKind, Queue};
 use bvault_store::{ArtifactStore, RawStore};
 
+use crate::health::Health;
+
 /// Shared, read-only handles for every job.
 pub struct Worker {
     pub queue: Queue,
@@ -31,14 +33,29 @@ pub struct Worker {
 impl Worker {
     /// Run forever: claim, process, repeat; sleep when idle. Only returns on an
     /// unrecoverable error (which restarts the pod).
-    pub async fn run(self: Arc<Self>, lease: Duration, poll: Duration) -> Result<()> {
+    pub async fn run(
+        self: Arc<Self>,
+        lease: Duration,
+        poll: Duration,
+        health: Health,
+    ) -> Result<()> {
         info!("analysis worker ready");
         loop {
             match self.queue.claim(JobKind::Analysis, lease).await {
-                Ok(Some(job)) => self.clone().process(job).await,
-                Ok(None) => tokio::time::sleep(poll).await,
+                Ok(Some(job)) => {
+                    health.tick(true);
+                    health.job_started();
+                    self.clone().process(job).await;
+                    health.job_finished();
+                }
+                Ok(None) => {
+                    health.tick(true);
+                    tokio::time::sleep(poll).await;
+                }
                 Err(e) => {
                     // Transient DB hiccup — back off and retry, don't crash.
+                    // Not-ready, but still live: a restart wouldn't fix the DB.
+                    health.tick(false);
                     error!(error = %e, "claim failed; backing off");
                     tokio::time::sleep(poll).await;
                 }

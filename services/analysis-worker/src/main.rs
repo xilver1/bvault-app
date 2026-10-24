@@ -4,6 +4,7 @@
 //! horizontally scalable — run as many replicas as the cluster allows.
 
 mod config;
+mod health;
 mod worker;
 
 use std::sync::Arc;
@@ -16,6 +17,7 @@ use bvault_jobs::Queue;
 use bvault_store::{ArtifactStore, RawStore};
 
 use crate::config::Config;
+use crate::health::Health;
 use crate::worker::Worker;
 
 // Current-thread runtime: the async side only orchestrates (claim/complete/fail
@@ -27,6 +29,13 @@ async fn main() -> anyhow::Result<()> {
     let _telemetry = bvault_telemetry::init("bvault-analysis-worker");
 
     let config = Config::from_env().context("loading config from environment")?;
+
+    // Up before the first Postgres connect, so a slow database at boot shows
+    // as not-ready rather than as a failed liveness probe and a restart.
+    let health = Health::new(config.lease);
+    health::spawn(&config.health_bind_addr, health.clone(), config.raw_store_root.clone())
+        .await
+        .context("starting health server")?;
 
     let queue = Queue::connect(&config.database_url, config.db_max_connections)
         .await
@@ -44,5 +53,5 @@ async fn main() -> anyhow::Result<()> {
         poll_s = config.poll_interval.as_secs(),
         "starting analysis worker"
     );
-    worker.run(config.lease, config.poll_interval).await
+    worker.run(config.lease, config.poll_interval, health).await
 }

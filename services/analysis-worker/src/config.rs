@@ -19,6 +19,9 @@ pub struct Config {
     pub lease: Duration,
     /// Wait between polls when the queue is empty.
     pub poll_interval: Duration,
+    /// Where the kubelet probes `/livez` and `/readyz`. Separate from any
+    /// future traffic port; never exposed through a Service or Ingress.
+    pub health_bind_addr: String,
 }
 
 impl Config {
@@ -30,6 +33,7 @@ impl Config {
             db_max_connections: optional("DB_MAX_CONNECTIONS", "4").parse()?,
             lease: Duration::from_secs(optional("LEASE_SECONDS", "300").parse()?),
             poll_interval: Duration::from_secs(optional("POLL_INTERVAL_SECONDS", "5").parse()?),
+            health_bind_addr: optional("HEALTH_BIND_ADDR", "0.0.0.0:8090"),
         })
     }
 }

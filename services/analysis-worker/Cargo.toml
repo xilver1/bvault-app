@@ -11,8 +11,8 @@ path = "src/main.rs"
 bvault-jobs = { path = "../../crates/bvault-jobs" }
 bvault-store = { path = "../../crates/bvault-store" }
 bvault-analysis = { path = "../../crates/bvault-analysis" }
-# Logging + OTLP span export. No `http-server` feature: this worker has no
-# HTTP surface, so it needs no server-span middleware.
+# Logging + OTLP span export. No `http-server` feature: the only HTTP surface
+# is the kubelet probe server, which deliberately emits no spans.
 bvault-telemetry = { path = "../../crates/bvault-telemetry" }
 # Note: no direct bvault-core dep — TrackAnalysis comes back from
 # analyze_source and its Serialize impl is used transitively; nothing here names
@@ -23,3 +23,5 @@ tokio = { workspace = true, features = ["time"] } # + timers; workspace has rt/m
 serde_json = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+# Probe server for /livez and /readyz only. Same major as the gateway.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
