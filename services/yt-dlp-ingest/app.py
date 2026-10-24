@@ -116,10 +116,20 @@ def _init_tracing() -> bool:
     """
     if os.getenv("OTEL_SDK_DISABLED", "false").lower() == "true":
         return False
-    if not (
-        os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-        or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-    ):
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") or os.getenv(
+        "OTEL_EXPORTER_OTLP_ENDPOINT"
+    )
+    if not endpoint:
+        return False
+    # A bare host:port is accepted here but fails on every single export
+    # ("No connection adapters were found"), so catch it once at startup
+    # instead of once per batch, forever.
+    if not endpoint.startswith(("http://", "https://")):
+        log.error(
+            "OTLP endpoint %r has no scheme (expected e.g. http://host:4318); "
+            "continuing without traces",
+            endpoint,
+        )
         return False
 
     try:

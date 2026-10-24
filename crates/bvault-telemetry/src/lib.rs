@@ -128,7 +128,17 @@ fn build_exporter() -> Option<SpanExporter> {
     if env_or("OTEL_SDK_DISABLED", "false").eq_ignore_ascii_case("true") {
         return None;
     }
-    endpoint_configured()?;
+    let endpoint = endpoint_configured()?;
+    // A bare `host:port` is neither a valid URI nor something the exporter can
+    // repair: it fails deep inside with a generic "invalid uri" and the service
+    // then runs silently trace-free. Name the actual mistake instead — this is
+    // the easiest of the OTEL_* variables to get wrong.
+    if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
+        eprintln!(
+            "telemetry: OTLP endpoint {endpoint:?} has no scheme              (expected e.g. http://host:4318); continuing without traces"
+        );
+        return None;
+    }
 
     match SpanExporter::builder()
         .with_http()
@@ -223,6 +233,14 @@ mod tests {
         // An unknown sampler name falls back rather than failing to start.
         std::env::set_var("OTEL_TRACES_SAMPLER", "nonsense");
         assert!(matches!(sampler_from_env(), Sampler::ParentBased(_)));
+
+        // A schemeless `host:port` is the easy ConfigMap mistake. It must
+        // degrade to logs-only, never panic and never take the service down.
+        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "192.168.0.192:4318");
+        assert!(
+            build_exporter().is_none(),
+            "a schemeless endpoint must not yield an exporter"
+        );
 
         std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
         std::env::remove_var("OTEL_TRACES_SAMPLER");
